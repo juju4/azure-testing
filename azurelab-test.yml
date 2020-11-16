@@ -1,0 +1,183 @@
+---
+# https://docs.ansible.com/ansible/devel/scenario_guides/guide_azure.html
+# https://github.com/ansible/ansible/tree/devel/contrib/inventory
+# https://docs.microsoft.com/en-us/azure/ansible/ansible-overview
+# https://docs.microsoft.com/en-us/azure/virtual-machines/linux/ansible-install-configure
+# https://github.com/erjosito/ansible-azure-lab
+#$ pip install ansible[azure]
+
+- name: Azure Cloud lab - infra
+  vars:
+    ip_allowlist: 1.1.1.1
+    base_rg: azurelab0
+    azure_location: eastus2
+    azure_tags:
+      - lab
+    base_subnet: 10.111.111.0/24
+    keyvault_access_policies:
+      - tenant_id: 72f98888-8666-4144-9199-2d7cd0111111
+        object_id: 99998888-8666-4144-9199-2d7cd0111111
+        keys:
+          - get
+          - list
+  hosts: azure
+  tasks:
+
+    # General
+    - name: Create resource group
+      azure_rm_resourcegroup:
+        name: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        tags: "{{ azure_tags }}"
+
+    - name: Create virtual network
+      azure_rm_virtualnetwork:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}vn001"
+        address_prefixes: "{{ base_vn }}"
+        tags: "{{ azure_tags }}"
+
+    - name: Add subnet
+      azure_rm_subnet:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}subnet001"
+        address_prefix: "{{ base_subnet }}"
+        virtual_network: "{{ base_name }}vn001"
+
+    # Keyvault
+    - name: Create instance of Key Vault
+      azure_rm_keyvault:
+        resource_group: "{{ base_rg }}"
+        vault_name: "{{ base_name }}keyvault001"
+        enabled_for_deployment: yes
+        vault_tenant: 72f98888-8666-4144-9199-2d7cd0111111
+        sku:
+          name: standard
+        access_policies: "{{ keyvault_access_policies }}"
+      register: kv
+- name: Create a key
+  azure_rm_keyvaultkey:
+    key_name: MyKey
+    keyvault_uri: "https://{{ kv.id }}.vault.azure.net/"
+  register: key1
+- name: Create a secret
+  azure_rm_keyvaultsecret:
+    secret_name: MySecret
+    secret_value: My_Pass_Sec
+    keyvault_uri: "https://{{ kv.id }}.vault.azure.net/"
+  register: secret1
+- name: Get Key Vault by name
+  azure_rm_keyvault_info:
+    resource_group: myResourceGroup
+    name: "{{ base_name }}keyvault001"
+- name: Get latest version of specific key
+  azure_rm_keyvaultkey_info:
+    vault_uri: "https://{{ kv.id }}.vault.azure.net/"
+    name: MyKey
+- name: List all versions of specific secret
+  azure_rm_keyvaultsecret_info:
+    vault_uri: "https://{{ kv.id }}.vault.azure.net/"
+    name: MySecret
+    version: all
+
+- name: Create (or update) SQL Server
+  azure_rm_sqlserver:
+    resource_group: "{{ base_rg }}"
+    name: "{{ base_name }}sql001"
+    admin_username: mylogin
+    admin_password: Testpasswordxyz12!
+  register: sql1
+- name: Create (or update) SQL Database
+  azure_rm_sqldatabase:
+    resource_group: "{{ base_rg }}"
+    server_name: "{{ base_name }}sql001"
+    name: testdb
+- name: Create (or update) Firewall Rule
+  azure_rm_sqlfirewallrule:
+    resource_group: "{{ base_rg }}"
+    server_name: "{{ base_name }}sql001"
+    name: "{{ base_name }}sql001-firewallrules"
+    start_ip_address: "{{ ip_allowlist }}"
+    end_ip_address: "{{ ip_allowlist }}"
+- name: Get instance of SQL Server
+  azure_rm_sqlserver_info:
+    resource_group: "{{ base_rg }}"
+    server_name: "{{ base_name }}sql001"
+- name: Get instance of SQL Database
+  azure_rm_sqldatabase_info:
+    resource_group: "{{ base_rg }}"
+    server_name: "{{ base_name }}sql001"
+    name: testdb
+- name: Import SQL File
+  mssql_db:
+    name: testdb
+    state: import
+    target: "{{ import_file_dest }}"
+    login_host: "{{ sql1.fully_qualified_domain_name }}"
+    login_port: "{{ db_port | default('1433') }}"
+    login_user: mylogin
+    login_password: Testpasswordxyz12!
+
+# https://docs.microsoft.com/en-us/azure/app-service/quickstart-php?pivots=platform-linux
+# Web App
+- name: Create a windows web app with php
+  azure_rm_webapp:
+    resource_group: "{{ base_rg }}"
+    name: "{{ base_name }}webapp001"
+    plan:
+      resource_group: myAppServicePlan_rg
+      name: myAppServicePlan
+    app_settings:
+      testkey: testvalue
+    frameworks:
+      - name: "php"
+        version: "7.4"
+    #scm_type: 'LocalGit'
+    scm_type: 'GitHub'
+    # ?
+    startup_file: https://github.com/Azure-Samples/php-docs-hello-world
+  register: webapp1
+
+# https://sabbour.me/how-to-run-an-app-service-behind-a-waf-enabled-application-gateway/
+# https://github.com/Azure/azure-quickstart-templates/tree/master/201-web-app-with-app-gateway-v2
+- name: Create instance of Application Gateway
+  azure_rm_appgateway:
+    resource_group: "{{ base_rg }}"
+    name: "{{ base_name }}appgateway001"
+    sku:
+      #name: standard_small
+      #tier: standard
+      name: waf_v2
+      tier: waf_v2
+      capacity: 2
+    gateway_ip_configurations:
+      - subnet:
+          id: "{{ subnet_id }}"
+        name: app_gateway_ip_config
+    frontend_ip_configurations:
+      - subnet:
+          id: "{{ subnet_id }}"
+        name: sample_gateway_frontend_ip_config
+    frontend_ports:
+      - port: 90
+        name: ag_frontend_port
+    backend_address_pools:
+      - backend_addresses:
+          - ip_address: 10.0.0.4
+        name: test_backend_address_pool
+    backend_http_settings_collection:
+      - port: 80
+        protocol: http
+        cookie_based_affinity: enabled
+        name: sample_appgateway_http_settings
+        probe: "{{ base_name }}webapp001.azurewebsites.net"
+    http_listeners:
+      - frontend_ip_configuration: sample_gateway_frontend_ip_config
+        frontend_port: ag_frontend_port
+        name: sample_http_listener
+    request_routing_rules:
+      - rule_type: Basic
+        backend_address_pool: test_backend_address_pool
+        backend_http_settings: sample_appgateway_http_settings
+        http_listener: sample_http_listener
+        name: rule1
