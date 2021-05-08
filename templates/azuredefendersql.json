@@ -1,0 +1,8 @@
+{
+  "id": "/subscriptions/{{ az_subscription_id }}/providers/Microsoft.Security/pricings/SqlServers",
+  "name": "SqlServers",
+  "type": "Microsoft.Security/pricings",
+  "properties": {
+    "pricingTier": "Standard"
+  }
+}
