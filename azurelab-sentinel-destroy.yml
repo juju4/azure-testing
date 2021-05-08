@@ -1,0 +1,29 @@
+---
+# 3-4min run
+
+- name: Azure Cloud lab - Sentinel destroy
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    base_name: azurelab0sentinel0
+    base_rg: "{{ base_name }}rg"
+    azure_location: eastus2
+    az_object_id: "{{ lookup('env', 'AZURE_OBJECT_ID') }}"
+    az_app_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
+    az_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
+    az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
+    az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
+    sentinel_workspaceName: "{{ base_name }}-sentinel-workspace"
+
+  collections:
+    - azure.azcollection
+  tasks:
+
+    # General
+    - name: Destroy Sentinel resource group
+      azure_rm_resourcegroup:
+        name: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        state: absent
+        force_delete_nonempty: yes

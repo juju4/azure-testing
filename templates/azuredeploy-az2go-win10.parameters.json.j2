@@ -1,0 +1,39 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "workspaceName": {
+            "value": "Sentinel2Go"
+        },
+        "pricingTier": {
+            "value": "PerGB2018"
+        },
+        "dataRetention": {
+            "value": 30
+        },
+        "immediatePurgeDataOn30Days": {
+            "value": true
+        },
+        "adminUsername": {
+	        "value": "{{ sentinel_arm_win10_admin_user }}"
+        },
+        "adminPassword": {
+	        "value": "{{ sentinel_arm_win10_admin_pass }}"
+        },
+        "allowedIPAddresses": {
+	        "value": "{{ sentinel_arm_win10_allowed_ip }}"
+        },
+        "numberOfWorkstations": {
+	        "value": {{ sentinel_arm_win10_num_workstations }}
+        },
+        "enableSysmon": {
+	        "value": {{ sentinel_arm_win10_enable_sysmon }}
+        },
+        "c2Framework": {
+	        "value": "{{ sentinel_arm_win10_c2 }}"
+        },
+        "securityCollectionTier": {
+            "value": "{{ sentinel_arm_win10_securityCollection }}"
+        }
+    }
+}

@@ -1,0 +1,108 @@
+---
+# https://github.com/Azure/azure-quickstart-templates/tree/master/quickstarts/microsoft.operationsmanagement/azure-sentinel
+# https://github.com/OTRF/Azure-Sentinel2Go
+# https://medium.com/threat-hunters-forge/azure-sentinel-to-go-b5f6848d3c61
+# https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs Sentinel = 13 matches, mostly data connector, few rules
+# https://docs.ansible.com/ansible/latest/collections/azure/azcollection/index.html#plugins-in-azure-azcollection none
+# https://techcommunity.microsoft.com/t5/azure-sentinel/deploying-and-managing-azure-sentinel-as-code/ba-p/1131928
+# ~1min run
+
+- name: Azure Cloud lab - Sentinel
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    base_name: azurelab0sentinel0
+    base_rg: "{{ base_name }}rg"
+    azure_location: eastus2
+    azure_tags:
+      tier: lab
+      project: azure-testing 
+    az_object_id: "{{ lookup('env', 'AZURE_OBJECT_ID') }}"
+    az_app_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
+    az_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
+    az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
+    az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
+    sentinel_workspaceName: "{{ base_name }}-sentinel-workspace"
+
+  collections:
+    - azure.azcollection
+  tasks:
+
+    # General
+    - name: Create resource group
+      azure_rm_resourcegroup:
+        name: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        tags: "{{ azure_tags }}"
+
+    # FIXME: Resource group create_or_update failed with status code: 409 and message: Invalid resource group location 'westus'. The Resource group already exists in location 'eastus2'.
+    #   but no westus reference anywhere...
+    - name: Deploy Sentinel with ARM template
+      azure_rm_deployment:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_rg }}-sentinel"
+        state: present
+        template_link: 'https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/quickstarts/microsoft.operationsmanagement/azure-sentinel/azuredeploy.json'
+        parameters_link: 'https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/quickstarts/microsoft.operationsmanagement/azure-sentinel/azuredeploy.parameters.json'
+        # parameters:
+        #   workspaceName: "{{ sentinel_workspaceName }}"
+        #   location: "{{ azure_location }}"
+      when: False
+
+    # ARM template through az cli...
+    # https://thecloudblog.net/post/simplifying-arm-template-deployments-with-ansible/
+    - name: Create parameters
+      template:
+        src: templates/azuredeploy.parameters.json.j2
+        dest: /tmp/azuredeploy.parameters.json
+        mode: '0600'
+
+    - name: Get Logs Analytics info
+      azure_rm_resource_info:
+        resource_group: "{{ base_rg }}"
+        resource_type: workspaces
+        provider: OperationalInsights
+      register: workspaces
+
+    # - debug: msg="{{ workspaces.response[0] }}"
+    # - pause:
+
+    - name: Deploy Sentinel with ARM template - az cli
+      shell: az deployment group create \
+        --name AnsibleDeployment \
+        --resource-group {{ base_rg }} \
+        --template-uri "https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/quickstarts/microsoft.operationsmanagement/azure-sentinel/azuredeploy.json" \
+        --parameters @/tmp/azuredeploy.parameters.json
+      register: deploy
+      when: >
+        workspaces.response is not defined or workspaces.response[0].value == []
+
+    - name: Deploy Sentinel with ARM template - az cli Output
+      debug:
+        msg: "{{ deploy.stdout }}"
+      when: deploy is defined and deploy.stdout is defined
+
+    # MMA 64bits download: https://go.microsoft.com/fwlink/?LinkId=828603
+    #     Linux: wget https://raw.githubusercontent.com/Microsoft/OMS-Agent-for-Linux/master/installer/scripts/onboard_agent.sh && sh onboard_agent.sh -w {{ workspaceid }} -s {{ primarykey }} -d opinsights.azure.com
+    # https://github.com/OTRF/Azure-Sentinel2Go/tree/master/azure-sentinel/linkedtemplates/data-connectors
+    # https://github.com/OTRF/Azure-Sentinel2Go/blob/master/azure-sentinel/linkedtemplates/data-connectors/securityEvents.json
+    # https://github.com/OTRF/Azure-Sentinel2Go/blob/master/azure-sentinel/linkedtemplates/log-analytics/winDataSources.json
+    # https://github.com/OTRF/Azure-Sentinel2Go/blob/master/azure-sentinel/linkedtemplates/log-analytics/syslogDataSources.json
+    # https://github.com/OTRF/Azure-Sentinel2Go/blob/master/azure-sentinel/linkedtemplates/log-analytics/iisLogsDataSource.json
+
+    - name: Get Logs Analytics info
+      azure_rm_resource_info:
+        resource_group: "{{ base_rg }}"
+        resource_type: workspaces
+        provider: OperationalInsights
+      register: workspaces2
+    
+    - name: Set fact | workspaceid
+      set_fact:
+        workspaceid: "{{ workspaces2.response[0].properties.customerId }}"
+
+    - debug: var=workspaceid
+
+    # FIXME: ARM template can recover workspace key but it does not seem possible for ansible
+    #   per https://github.com/OTRF/Azure-Sentinel2Go/blob/master/grocery-list/Win10/azuredeploy.json#L322
