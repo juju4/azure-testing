@@ -1,0 +1,294 @@
+---
+# https://docs.microsoft.com/en-us/azure/developer/ansible/key-vault-configure-vm-security
+
+- name: Azure Cloud lab - database
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    az_firewallRuleName: AllowedSrc
+    ip_allowlist: 192.168.1.1
+    base_name: azurelab0
+    base_rg: "{{ base_name }}rg"
+    azure_location: eastus2
+    azure_tags:
+      tier: lab
+    sqlservername: "{{ base_name }}testsqlserver"
+    sqldbname: sampledb
+    sql_admin_user: mylogin
+    sql_admin_pass: 'Testpasswordxyz12!'
+    storage_account: "{{ base_name }}clh0002"
+    az_object_id: "{{ lookup('env', 'AZURE_OBJECT_ID') }}"
+    az_app_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
+    az_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
+    az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
+    az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
+
+  collections:
+    - azure.azcollection
+  tasks:
+
+    # General
+    - name: Create resource group
+      azure_rm_resourcegroup:
+        name: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        tags: "{{ azure_tags }}"
+
+    # Database
+    # https://docs.ansible.com/ansible/latest/collections/azure/azcollection/azure_rm_sqlserver_module.html
+    # https://docs.ansible.com/ansible/latest/collections/azure/azcollection/azure_rm_sqldatabase_module.html
+    - name: Create (or update) SQL Server
+      azure_rm_sqlserver:
+        resource_group: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        name: "{{ sqlservername }}"
+        admin_username: "{{ sql_admin_user }}"
+        admin_password: "{{ sql_admin_pass }}"
+        tags: "{{ azure_tags }}"
+
+    - name: Create (or update) SQL Database
+      azure_rm_sqldatabase:
+        resource_group: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        server_name: "{{ sqlservername }}"
+        name: "{{ sqldbname }}"
+        sample_name: adventure_works_lt
+        zone_redundant: no
+        tags: "{{ azure_tags }}"
+
+    - name: create storage account for audit
+      azure_rm_storageaccount:
+        resource_group: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        name: "{{ storage_account }}"
+        type: Standard_RAGRS
+        tags: "{{ azure_tags }}"
+
+    - name: Create container foo
+      azure_rm_storageblob:
+        resource_group: "{{ base_rg }}"
+        storage_account_name: "{{ storage_account }}"
+        container: audit
+        tags: "{{ azure_tags }}"
+
+    - debug: var=az_tenant_id
+    - debug: var=az_app_id
+    # https://docs.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow#get-a-token
+    # https://liquidat.wordpress.com/2019/08/22/short-tip-handling-cant-concat-str-to-bytes-error-using-the-uri-module/
+    - name: Get a REST API token
+      uri:
+        url: "https://login.microsoftonline.com/{{ az_tenant_id }}/oauth2/v2.0/token"
+        method: POST
+        status_code: 200
+        headers:
+          Content-Type: 'application/x-www-form-urlencoded'
+        body_format: form-urlencoded
+        body:
+          client_id: "{{ az_app_id }}"
+          scope: "https://management.azure.com/.default"
+          client_secret: "{{ az_secret }}"
+          grant_type: "client_credentials"
+        return_content: yes
+      register: token
+    - debug: var=token verbosity=1
+
+    - name: get the storage account keys
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Storage/storageAccounts/{{ storage_account }}/listKeys?api-version=2016-12-01"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ token.json.access_token }}"
+        return_content: yes
+      register: storage_account_keys
+
+    - debug:
+        msg: "{{ storage_account_keys.json['keys'].0.value }}"
+
+    - debug:
+        msg: "{{ storage_account_keys.json['keys'].1.value }}"
+
+    # Non-standard options
+    # https://docs.ansible.com/ansible/latest/collections/ansible/builtin/uri_module.html
+    # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/databaseblobauditingpolicies/createorupdate
+    # https://docs.microsoft.com/en-us/azure/templates/microsoft.sql/servers/databases/auditingsettings?tabs=json
+    # https://docs.microsoft.com/en-us/sql/relational-databases/security/auditing/sql-server-audit-action-groups-and-actions?view=sql-server-ver15#database-level-audit-action-groups
+    # FIXME: only to blob storage, not log analytics or eventhub
+    # FIXME: auditing of Microsoft operations (server level only, not database)
+    # FIXME: granular sql statement/table auditing does not seem working
+    - name: Enable database auditing with custom settings
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/auditingSettings/default?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: PUT
+        force_basic_auth: yes
+        status_code: [200, 201]
+        body_format: json
+        # body: "{{ lookup('template','azuredbpolicy.json.j2') }}"
+        body: |
+          {
+            "properties": {
+              "state": "Enabled",
+              "storageEndpoint": "https://{{ storage_account }}.blob.core.windows.net",
+              "storageAccountAccessKey": "{{ storage_account_keys.json['keys'].0.value }}",
+              "retentionDays": 1,
+              "isAzureMonitorTargetEnabled": true,
+              "auditActionsAndGroups": [
+                "SUCCESSFUL_DATABASE_AUTHENTICATION_GROUP",
+                "FAILED_DATABASE_AUTHENTICATION_GROUP",
+                "BACKUP_RESTORE_GROUP",
+                "DATABASE_LOGOUT_GROUP",
+                "USER_CHANGE_PASSWORD_GROUP",
+                "DATABASE_PRINCIPAL_CHANGE_GROUP",
+                "DATABASE_ROLE_MEMBER_CHANGE_GROUP",
+                "UPDATE on database::{{ sqldbname }} by public"
+              ]
+            }
+          }
+
+    - name: Get database auditing
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/auditingSettings/default?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: GET
+        status_code: 200
+      register: dbaudit
+    - debug: var=dbaudit
+
+    # FIXME: not working
+    - name: Enable server auditing
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/auditingSettings/default?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: PUT
+        force_basic_auth: yes
+        status_code: [200, 201]
+        body_format: json
+        body: |
+          {
+            "properties": {
+              "state": "Enabled",
+              "storageAccountAccessKey": "{{ storage_account_keys.json['keys'].0.value }}",
+              "storageEndpoint": "https://{{ storage_account }}.blob.core.windows.net",
+              "retentionDays": 1,
+              "isAzureMonitorTargetEnabled": true
+            }
+          }
+
+    # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/databasesecurityalertpolicies/get
+    - name: Get Database Security Alert Policies
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/securityAlertPolicies/default?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: GET
+        status_code: 200
+      register: secalertpol
+    - debug: var=secalertpol
+
+    # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/firewallrules/createorupdate
+    - name: Set Firewall rule
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/firewallRules/{{ az_firewallRuleName }}?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: PUT
+        force_basic_auth: yes
+        status_code: [200, 201]
+        body_format: json
+        body: |
+          {
+            "properties": {
+              "startIpAddress": "{{ ip_allowlist }}",
+              "endIpAddress": "{{ ip_allowlist }}"
+            }
+          }
+
+    # https://docs.microsoft.com/en-us/azure/azure-sql/database/azure-defender-for-sql
+    # https://docs.microsoft.com/en-us/azure/azure-sql/database/azure-defender-for-sql#enable-azure-defender-plans-programatically
+    # https://docs.microsoft.com/en-us/rest/api/securitycenter/pricings/update = seems only at subscription level/resource type and not individual resource
+    # https://docs.microsoft.com/en-us/rest/api/securitycenter/pricings/get
+    - name: Get Azure Security center pricings and settings
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/providers/Microsoft.Security/pricings/SqlServers?api-version=2018-06-01"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: GET
+        status_code: 200
+      register: asc1
+    - debug: var=asc1
+
+    - name: Set Azure Defender for Sql Server
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/providers/Microsoft.Security/pricings/SqlServers?api-version=2018-06-01"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        body_format: json
+        body: "{{ lookup('file','azuredefendersql.json') }}"
+        method: PUT
+        status_code: 200
+        return_content: yes
+      register: asc2
+    - debug: var=asc2
+
+    # Testing
+    # https://docs.microsoft.com/en-us/sql/tools/mssql-cli?view=sql-server-ver15
+    # https://github.com/dbcli/mssql-cli
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!'
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' -Q 'SELECT name FROM SYSOBJECTS;'
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' -Q 'SELECT TABLE_NAME FROM sampledb.INFORMATION_SCHEMA.TABLES;'
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' -Q 'xp_cmdshell;'
+    #   Defender alert
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' -Q 'SELECT * FROM [SalesLT].Address;'
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' --row-limit 5 -Q "UPDATE [SalesLT].Address SET AddressLine2='wherever..' WHERE AddressID=9;"
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' --row-limit 5 -Q "BACKUP;"
+    #   Incorrect syntax near ';'.
+    # mssql-cli -S azurelab0testsqlserver.database.windows.net -d sampledb -U 'mylogin' -P 'Testpasswordxyz12!' --row-limit 5 -Q "BACKUP DATABASE AdventureWorks2012 TO AdvWorksData;"
+    #   Statement 'BACKUP DATABASE' is not supported in this version of SQL Server.
+
+    # ASC Recommendations
+    # https://docs.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-configure?WT.mc_id=Portal-Microsoft_Azure_Security&tabs=azure-powershell
+    - name: Get user or group as ActiveDirectoryAdministrator for SQL server
+      shell: Get-AzSqlServerActiveDirectoryAdministrator -ResourceGroupName "{{ base_rg }}" -ServerName "{{ sqlservername }}"
+      args:
+        executable: /usr/local/bin/pwsh
+      register: ada
+      changed_when: false
+
+    - name: Set user or group as ActiveDirectoryAdministrator for SQL server
+      shell: Set-AzSqlServerActiveDirectoryAdministrator -ResourceGroupName "{{ base_rg }}" -ServerName "{{ sqlservername }}" -DisplayName "secautomation"
+      args:
+        executable: /usr/local/bin/pwsh
+      when: "'secautomation' not in ada.stdout"
+    # Private Endpoint, https://docs.microsoft.com/en-us/azure/azure-sql/database/private-endpoint-overview
+    # https://docs.microsoft.com/en-us/azure/azure-sql/database/connectivity-settings#deny-public-network-access
+
+    # https://docs.microsoft.com/en-us/azure/azure-sql/database/data-discovery-and-classification-overview
+    # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/sensitivitylabels/listrecommendedbydatabase
+    - name: Sensitivity Labels - List Recommended By Database
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/recommendedSensitivityLabels?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: GET
+        status_code: 200
+        return_content: yes
+      register: sl1
+    - debug: var=sl1
+
+    - name: Sensitivity Labels - Enable Recommendation
+      uri:
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/schemas/{{ item.schema }}/tables/{{ item.table }}/columns/{{ item.column }}/sensitivityLabels/recommended/enable?api-version=2020-11-01-preview"
+        headers:
+          Authorization: "Bearer {{ token['json']['access_token'] }}"
+        method: POST
+        status_code: 200
+        return_content: yes
+      register: sl2
+      with_items:
+        - { schema: 'SalesLT', table: 'Customer', column: 'PasswordHash' }
+        - { schema: 'SalesLT', table: 'SalesOrderHeader', column: 'CreditCardApprovalCode' }
+    - debug: var=sl2
