@@ -4,23 +4,55 @@
 # https://docs.microsoft.com/en-us/azure/ansible/ansible-overview
 # https://docs.microsoft.com/en-us/azure/virtual-machines/linux/ansible-install-configure
 # https://github.com/erjosito/ansible-azure-lab
+# https://docs.microsoft.com/en-us/azure/developer/ansible/key-vault-configure-vm-security
 #$ pip install ansible[azure]
 
 - name: Azure Cloud lab - infra
+  hosts: localhost
+  gather_facts: no
   vars:
     ip_allowlist: 1.1.1.1
-    base_rg: azurelab0
+    base_name: azurelab0
+    base_rg: "{{ base_name }}rg"
     azure_location: eastus2
     azure_tags:
-      - lab
+      tier: lab
+    base_vn: 10.111.0.0/16
     base_subnet: 10.111.111.0/24
+    appg_vn: 10.112.0.0/16
+    appg_subnet: 10.112.112.0/24
+    appg_subnet_name: AppGwSubnet
+    publicip_name: myAGPublicIPAddress
+    az_object_id: "{{ lookup('env', 'AZURE_OBJECT_ID') }}"
+    az_app_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
+    az_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
+    az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
+    az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
+    # https://docs.microsoft.com/en-us/cli/azure/keyvault?view=azure-cli-latest#az_keyvault_set_policy
     keyvault_access_policies:
-      - tenant_id: 72f98888-8666-4144-9199-2d7cd0111111
-        object_id: 99998888-8666-4144-9199-2d7cd0111111
+      - object_id: "{{ az_object_id }}"
+        tenant_id: "{{ az_tenant_id }}"
         keys:
-          - get
-          - list
-  hosts: azure
+              - get
+              - list
+              - update
+              - create
+              - import
+              - delete
+              - recover
+              - backup
+              - restore
+        secrets:
+              - get
+              - list
+              - set
+              - delete
+              - recover
+              - backup
+              - restore
+    skip_azure_sdk: false  # Prevent azure_preview_modules of trying to update Python SDK
+  collections:
+    - azure.azcollection
   tasks:
 
     # General
@@ -44,140 +76,187 @@
         address_prefix: "{{ base_subnet }}"
         virtual_network: "{{ base_name }}vn001"
 
+    - name: Add Appgateway virtual network
+      azure_rm_virtualnetwork:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}vn002"
+        address_prefixes: "{{ appg_vn }}"
+    - name: Add Appgateway subnet
+      azure_rm_subnet:
+        resource_group: "{{ base_rg }}"
+        name: "{{ appg_subnet_name }}"
+        address_prefix: "{{ appg_subnet }}"
+        virtual_network: "{{ base_name }}vn002"
+    - name: Get info of Subnet
+      azure_rm_resource_facts:
+        api_version: '2018-08-01'
+        resource_group: "{{ base_rg }}"
+        provider: network
+        resource_type: virtualnetworks
+        resource_name: "{{ base_name }}vn002"
+        subresource:
+          - type: subnets
+            name: "{{ appg_subnet_name }}"
+      register: appg_subnet1
+    - name: Create a public IP address - AppGateway
+      azure_rm_publicipaddress:
+        resource_group: "{{ base_rg }}"
+        allocation_method: Dynamic
+        name: "{{ publicip_name }}"
+        #domain_name_label: "{{ publicip_domain }}"
+
     # Keyvault
+    # https://github.com/Azure-Samples/ansible-playbooks/blob/master/keyvault_create.yml
     - name: Create instance of Key Vault
       azure_rm_keyvault:
         resource_group: "{{ base_rg }}"
         vault_name: "{{ base_name }}keyvault001"
         enabled_for_deployment: yes
-        vault_tenant: 72f98888-8666-4144-9199-2d7cd0111111
+        enable_soft_delete: yes
+        vault_tenant: "{{ az_tenant_id }}"
         sku:
           name: standard
         access_policies: "{{ keyvault_access_policies }}"
       register: kv
-- name: Create a key
-  azure_rm_keyvaultkey:
-    key_name: MyKey
-    keyvault_uri: "https://{{ kv.id }}.vault.azure.net/"
-  register: key1
-- name: Create a secret
-  azure_rm_keyvaultsecret:
-    secret_name: MySecret
-    secret_value: My_Pass_Sec
-    keyvault_uri: "https://{{ kv.id }}.vault.azure.net/"
-  register: secret1
-- name: Get Key Vault by name
-  azure_rm_keyvault_info:
-    resource_group: myResourceGroup
-    name: "{{ base_name }}keyvault001"
-- name: Get latest version of specific key
-  azure_rm_keyvaultkey_info:
-    vault_uri: "https://{{ kv.id }}.vault.azure.net/"
-    name: MyKey
-- name: List all versions of specific secret
-  azure_rm_keyvaultsecret_info:
-    vault_uri: "https://{{ kv.id }}.vault.azure.net/"
-    name: MySecret
-    version: all
+    - name: Create a key
+      azure_rm_keyvaultkey:
+        key_name: MyKey
+        keyvault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
+        #client_id: "{{ az_app_id }}"
+        #secret: "{{ az_secret }}"
+        #subscription_id: "{{ az_subscription_id }}"
+        #tenant: "{{ az_tenant_id }}"
+      register: key1
+    - name: Create a secret
+      azure_rm_keyvaultsecret:
+        secret_name: MySecret
+        secret_value: My_Pass_Sec
+        keyvault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
+      register: secret1
+    - name: Get Key Vault by name
+      azure_rm_keyvault_info:
+        resource_group: myResourceGroup
+        name: "{{ base_name }}keyvault001"
+    - name: Get latest version of specific key
+      azure_rm_keyvaultkey_info:
+        vault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
+        name: MyKey
+    - name: List all versions of specific secret
+      azure.azcollection.azure_rm_keyvaultsecret_info:
+        vault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
+        name: MySecret
+        version: all
 
-- name: Create (or update) SQL Server
-  azure_rm_sqlserver:
-    resource_group: "{{ base_rg }}"
-    name: "{{ base_name }}sql001"
-    admin_username: mylogin
-    admin_password: Testpasswordxyz12!
-  register: sql1
-- name: Create (or update) SQL Database
-  azure_rm_sqldatabase:
-    resource_group: "{{ base_rg }}"
-    server_name: "{{ base_name }}sql001"
-    name: testdb
-- name: Create (or update) Firewall Rule
-  azure_rm_sqlfirewallrule:
-    resource_group: "{{ base_rg }}"
-    server_name: "{{ base_name }}sql001"
-    name: "{{ base_name }}sql001-firewallrules"
-    start_ip_address: "{{ ip_allowlist }}"
-    end_ip_address: "{{ ip_allowlist }}"
-- name: Get instance of SQL Server
-  azure_rm_sqlserver_info:
-    resource_group: "{{ base_rg }}"
-    server_name: "{{ base_name }}sql001"
-- name: Get instance of SQL Database
-  azure_rm_sqldatabase_info:
-    resource_group: "{{ base_rg }}"
-    server_name: "{{ base_name }}sql001"
-    name: testdb
-- name: Import SQL File
-  mssql_db:
-    name: testdb
-    state: import
-    target: "{{ import_file_dest }}"
-    login_host: "{{ sql1.fully_qualified_domain_name }}"
-    login_port: "{{ db_port | default('1433') }}"
-    login_user: mylogin
-    login_password: Testpasswordxyz12!
+    - name: Create (or update) SQL Server
+      azure_rm_sqlserver:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}sql001"
+        admin_username: mylogin
+        admin_password: Testpasswordxyz12!
+      register: sql1
+    - name: Create (or update) SQL Database
+      azure_rm_sqldatabase:
+        resource_group: "{{ base_rg }}"
+        server_name: "{{ base_name }}sql001"
+        name: testdb
+    - name: Create (or update) Firewall Rule
+      azure_rm_sqlfirewallrule:
+        resource_group: "{{ base_rg }}"
+        server_name: "{{ base_name }}sql001"
+        name: "{{ base_name }}sql001-firewallrules"
+        start_ip_address: "{{ ip_allowlist }}"
+        end_ip_address: "{{ ip_allowlist }}"
+    - name: Get instance of SQL Server
+      azure_rm_sqlserver_info:
+        resource_group: "{{ base_rg }}"
+        server_name: "{{ base_name }}sql001"
+    - name: Get instance of SQL Database
+      azure_rm_sqldatabase_info:
+        resource_group: "{{ base_rg }}"
+        server_name: "{{ base_name }}sql001"
+        name: testdb
+    # https://github.com/HeidiSQL/HeidiSQL/issues/188
+    # https://github.com/ansible-collections/community.general/blob/a1c03a3cfea17fdecf7b333a4f5665707283875d/plugins/modules/database/mssql/mssql_db.py#L119
+    # FIXME: pymssql.OperationalError: (40508, b'USE statement is not supported to switch between databases. Use a new connection to connect to a different database.DB-Lib error message 20018, severity 16:\nGeneral SQL Server error: Check messages from the SQL Server
+    #   https://support.microsoft.com/sw-ke/help/3035071/kb3035071-fix-error-when-you-run-a-query-that-contains-use-database-na
+    - name: Import SQL File
+      mssql_db:
+        name: testdb
+        state: import
+        # https://docs.microsoft.com/en-us/sql/samples/sql-samples-where-are?view=sql-server-ver15; https://github.com/microsoft/sql-server-samples
+        # from https://raw.githubusercontent.com/microsoft/sql-server-samples/master/samples/databases/contoso-data-warehouse/load-contoso-data-warehouse-to-sql-data-warehouse.sql
+        target: load-contoso-data-warehouse-to-sql-data-warehouse.sql
+        login_host: "{{ sql1.fully_qualified_domain_name }}"
+        login_port: "{{ db_port | default('1433') }}"
+        login_user: mylogin
+        login_password: Testpasswordxyz12!
+      when: false
 
-# https://docs.microsoft.com/en-us/azure/app-service/quickstart-php?pivots=platform-linux
-# Web App
-- name: Create a windows web app with php
-  azure_rm_webapp:
-    resource_group: "{{ base_rg }}"
-    name: "{{ base_name }}webapp001"
-    plan:
-      resource_group: myAppServicePlan_rg
-      name: myAppServicePlan
-    app_settings:
-      testkey: testvalue
-    frameworks:
-      - name: "php"
-        version: "7.4"
-    #scm_type: 'LocalGit'
-    scm_type: 'GitHub'
-    # ?
-    startup_file: https://github.com/Azure-Samples/php-docs-hello-world
-  register: webapp1
+    # https://docs.microsoft.com/en-us/azure/app-service/quickstart-php?pivots=platform-linux
+    # Web App
+    - name: Create a web app with php
+      azure_rm_webapp:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}webapp001"
+        plan:
+          resource_group: "{{ base_rg }}"
+          name: myAppServicePlan
+          sku: B1
+          is_linux: yes
+        app_settings:
+          testkey: testvalue
+        frameworks:
+          - name: "php"
+            version: "7.4"
+        #scm_type: 'LocalGit'
+        scm_type: 'GitHub'
+        startup_file: https://github.com/Azure-Samples/php-docs-hello-world
+      register: webapp1
 
-# https://sabbour.me/how-to-run-an-app-service-behind-a-waf-enabled-application-gateway/
-# https://github.com/Azure/azure-quickstart-templates/tree/master/201-web-app-with-app-gateway-v2
-- name: Create instance of Application Gateway
-  azure_rm_appgateway:
-    resource_group: "{{ base_rg }}"
-    name: "{{ base_name }}appgateway001"
-    sku:
-      #name: standard_small
-      #tier: standard
-      name: waf_v2
-      tier: waf_v2
-      capacity: 2
-    gateway_ip_configurations:
-      - subnet:
-          id: "{{ subnet_id }}"
-        name: app_gateway_ip_config
-    frontend_ip_configurations:
-      - subnet:
-          id: "{{ subnet_id }}"
-        name: sample_gateway_frontend_ip_config
-    frontend_ports:
-      - port: 90
-        name: ag_frontend_port
-    backend_address_pools:
-      - backend_addresses:
-          - ip_address: 10.0.0.4
-        name: test_backend_address_pool
-    backend_http_settings_collection:
-      - port: 80
-        protocol: http
-        cookie_based_affinity: enabled
-        name: sample_appgateway_http_settings
-        probe: "{{ base_name }}webapp001.azurewebsites.net"
-    http_listeners:
-      - frontend_ip_configuration: sample_gateway_frontend_ip_config
-        frontend_port: ag_frontend_port
-        name: sample_http_listener
-    request_routing_rules:
-      - rule_type: Basic
-        backend_address_pool: test_backend_address_pool
-        backend_http_settings: sample_appgateway_http_settings
-        http_listener: sample_http_listener
-        name: rule1
+    # https://sabbour.me/how-to-run-an-app-service-behind-a-waf-enabled-application-gateway/
+    # https://github.com/Azure/azure-quickstart-templates/tree/master/201-web-app-with-app-gateway-v2
+    # https://docs.microsoft.com/en-us/azure/developer/ansible/application-gateway-configure?tabs=ansible
+    - name: Create instance of Application Gateway
+      azure_rm_appgateway:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}appgateway001"
+        sku:
+          name: standard_small
+          tier: standard
+          # FIXME: Error creating the Application Gateway instance: Azure Error: ApplicationGatewayInvalidPublicIpSku\nMessage: Application gateway /subscriptions/14fda389-54b3-4c60-a72e-da270d196a06/resourceGroups/azurelab0rg/providers/Microsoft.Network/applicationGateways/azurelab0appgateway001 with SKU WAF_v2 can only reference public ip with Standard SKU.
+          #name: waf_v2
+          #tier: waf_v2
+          capacity: 2
+        gateway_ip_configurations:
+          - subnet:
+              id: "{{ appg_subnet1.response[0].id }}"
+            name: app_gateway_ip_config
+        frontend_ip_configurations:
+          #- subnet:
+          #    id: "{{ appg_subnet1.response[0].id }}"
+          #  name: sample_gateway_frontend_ip_config
+          - public_ip_address: "{{ publicip_name }}"
+            name: appGatewayFrontendIP
+        frontend_ports:
+          - port: 90
+            name: ag_frontend_port
+        backend_address_pools:
+          - backend_addresses:
+              - ip_address: 10.0.0.4
+            name: test_backend_address_pool
+        backend_http_settings_collection:
+          - port: 80
+            protocol: http
+            cookie_based_affinity: enabled
+            name: "{{ base_name }}webapp001"
+            #probe: "{{ base_name }}webapp001.azurewebsites.net"
+        http_listeners:
+          - frontend_ip_configuration: appGatewayFrontendIP
+            frontend_port: ag_frontend_port
+            name: sample_http_listener
+        request_routing_rules:
+          - rule_type: Basic
+            backend_address_pool: test_backend_address_pool
+            backend_http_settings: "{{ base_name }}webapp001"
+            http_listener: sample_http_listener
+            name: rule1
