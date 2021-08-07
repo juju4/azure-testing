@@ -1,0 +1,52 @@
+---
+ansible_python_interpreter: /usr/bin/python3
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+harden_upgradeall: false
+harden_fail2ban_ignoreip: '127.0.0.1 192.168.1.0/24 10.0.0.0/8'
+harden_sshd_allowusers: 'myadmin'
+harden_fw: false
+harden_fw_ssh_restricted: []  # Enforced at Azure NSG level, and easier for user self-update
+harden_fw_snmp_restricted: []
+ipv6_config: disable
+rsyslog_conf_d:
+  - 30-ansible.conf
+  - 30-iptables.conf
+  - 49-bash2syslog.conf
+rsyslog_conf_d_extradirs:
+  - { d: /var/log/ansible }
+  - { d: /var/log/snmpd }
+  - { d: /var/log/iptables }
+  - { d: /var/log/falco }
+# this is mostly overridden by cloud-init
+harden_mount_options:
+  - { mount: "/", opts: "defaults" }
+  - { mount: "/boot", opts: "defaults,nosuid,nodev,noexec" }
+  - { mount: "/home", opts: "defaults,nosuid,nodev" }
+  - { mount: "/tmp", opts: "defaults,nosuid,nodev,noexec" }
+  - { mount: "/usr", opts: "defaults,ro,nodev" }
+  - { mount: "/var/log/audit", opts: "defaults,nosuid,nodev,noexec" }
+  - { mount: "/var/log", opts: "defaults,nosuid,nodev,noexec" }
+  - { mount: "/var/tmp", opts: "defaults,nosuid,nodev,noexec" }
+  - { mount: "/var", opts: "defaults,nosuid" }
+  - { mount: "/dev/shm", opts: "defaults,nosuid,nodev,noexec" }
+  - { mount: "/run/shm", opts: "defaults,nosuid,nodev,noexec" }
+  ## https://linux-audit.com/linux-system-hardening-adding-hidepid-to-proc/
+  # - { mount: "/proc", opts: "rw,nosuid,nodev,noexec,relatime,hidepid=2" }
+  # - { mount: "/opt", opts: "defaults,nosuid,nodev" }
+  # Azure
+  # - { mount: "/boot/efi", opts: "umask=0077,nosuid,nodev" }
+  # - { mount: "/mnt", opts: "defaults,nofail,x-systemd.requires=cloud-init.service,comment=cloudconfig,nosuid,nodev" }
+  # - { mount: "/run/snapd/ns/lxd.mnt", opts: "defaults,nodev" }
+oms_checksum: 'sha256:17d12c35dd0dc52db52567b01dfd6997a4da7007137eb089083cab57973332db'
+monitor_workspaceid: TBD
+monitor_workspacekey: TBD
+# https://docs.ansible.com/ansible/latest/reference_appendices/faq.html#how-do-i-generate-encrypted-passwords-for-the-user-module
+# $ pip install passlib
+# $ python -c "from passlib.hash import sha512_crypt; import getpass; print(sha512_crypt.using(rounds=5000).hash(getpass.getpass()))"
+jumphost_linux_users:
+  - username: john
+    ssh_pubkey: "ssh-rsa xxxx"
+    password: "INVALID"
+
+# vault
+root_password: 'TBD'

@@ -1,0 +1,166 @@
+---
+# Ensure to review at minimum:
+#   - base ssh key (VM creation)
+#   - IP whitelist (should include Azure Shell current public IP)
+#   - ideally private credentials are stored in host_vars/*/vault.yml with ansible-vault
+# $ ssh-keygen -t rsa -m PEM -b 4096 -C "azureuser@cloudshell-202107"
+# $ ansible-galaxy install -r requirements.yml
+# $ export AZ_SUBSCRIPTION_ID=xxx
+# $ ansible-playbook -v azure-jumphost.yml
+
+- name: Create Azure infrastructure for jumphost
+  hosts: localhost
+  gather_facts: no
+  collections:
+    - azure.azcollection
+    # - community.azure
+  tasks:
+    - name: Create resource group
+      azure_rm_resourcegroup:
+        name: "{{ jumphost_base_rg }}"
+        location: "{{ azure_location }}"
+        tags: "{{ jumphost_azure_tags }}"
+
+    - name: Create virtual network
+      azure_rm_virtualnetwork:
+        resource_group: "{{ jumphost_base_rg }}"
+        name: "{{ jumphost_base_name }}vn001"
+        address_prefixes: "{{ jumphost_base_vn }}"
+        tags: "{{ jumphost_azure_tags }}"
+
+    - name: Add subnet
+      azure_rm_subnet:
+        resource_group: "{{ jumphost_base_rg }}"
+        name: "{{ jumphost_base_name }}subnet001"
+        address_prefix: "{{ jumphost_base_subnet }}"
+        virtual_network: "{{ jumphost_base_name }}vn001"
+
+    - name: Create network security group
+      azure_rm_securitygroup:
+        resource_group: "{{ jumphost_base_rg }}"
+        name: "{{ jumphost_base_name }}secgroup001"
+        rules: "{{ jumphost_base_nsg_rules }}"
+        tags: "{{ jumphost_azure_tags }}"
+
+    # Linux
+    - name: Create VM public ip address
+      azure_rm_publicipaddress:
+        resource_group: "{{ jumphost_base_rg }}"
+        name: "{{ jumphost_base_name }}PublicIP0"
+        domain_name: "{{ jump_domain_name | default(omit) }}"
+        allocation_method: Static
+        tags:
+          role: "Linux VM0"
+
+    - name: Create VM NIC
+      azure_rm_networkinterface:
+        resource_group: "{{ jumphost_base_rg }}"
+        name: "{{ jumphost_base_name }}nic0"
+        virtual_network: "{{ jumphost_base_name }}vn001"
+        subnet: "{{ jumphost_base_name }}subnet001"
+        security_group: "{{ jumphost_base_name }}secgroup001"
+        ip_configurations:
+          - name: ipconfig1
+            public_ip_address_name: "{{ jumphost_base_name }}PublicIP0"
+
+    - name: Create VM virtual machine
+      azure_rm_virtualmachine:
+        resource_group: "{{ jumphost_base_rg }}"
+        name: "{{ jumphost_base_name }}vm"
+        vm_size: "{{ jumphost_base_vm_size | default('Standard_D1_v2') }}"
+        managed_disk_type: "{{ jumphost_base_managedisk | default('Standard_LRS') }}"
+        boot_diagnostics:
+          enabled: yes
+        admin_username: "{{ jumphost_base_adminuser_login }}"
+        admin_password: "{{ jumphost_base_adminuser_password }}"
+        ssh_password_enabled: false
+        # for bastion
+        # ssh_password_enabled: true
+        ssh_public_keys: "{{ jumphost_linux_vm_ssh_keys }}"
+        network_interfaces: "{{ jumphost_base_name }}nic0"
+        image: "{{ jumphost_vm_image }}"
+        tags: "{{ jumphost_azure_tags }}"
+      register: vmout
+
+    - name: Add instance to the host group
+      add_host:
+        hostname: "{{ jumphost_base_name }}"
+        ansible_host: "{{ azure_vm.properties.networkProfile.networkInterfaces[0].properties.ipConfigurations[0].properties.publicIPAddress.properties.ipAddress }}"
+        ansible_user: "{{ jumphost_base_adminuser_login }}"
+        ansible_ssh_private_key_file: "{{ jumphost_base_adminuser_sshkeyfile_priv }}"
+        ansible_sudo_pass: "{{ jumphost_base_adminuser_password }}"
+        groups:
+          - azure_vms
+          - jumphost
+
+    - name: Pause to ensure VM fully booted
+      pause: seconds=15
+      when: vmout.changed
+
+- name: Configure VM host
+  hosts: jumphost
+  become: yes
+  pre_tasks:
+    - name: Debian | update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == 'Debian'
+    - name: Update latest packages
+      package:
+        name: '*'
+        state: latest
+      when: false
+    - name: Set root password to avoid single user lockout
+      ansible.builtin.user:
+        name: "root"
+        password: "{{ root_password | default(omit) }}"
+  roles:
+    - juju4.falco
+    - juju4.osquery
+    - juju4.auditd
+    - juju4.syslogclient
+    - geerlingguy.docker
+    - juju4.harden
+  tasks:
+    - name: Check host is reachable
+      ping:
+    # https://docs.microsoft.com/en-us/azure/azure-monitor/agents/agent-linux
+    # https://github.com/Microsoft/OMS-Agent-for-Linux
+    - name: Download OMS-Agent for Linux
+      get_url:
+        url: https://raw.githubusercontent.com/Microsoft/OMS-Agent-for-Linux/master/installer/scripts/onboard_agent.sh
+        dest: /root/onboard_agent.sh
+        mode: '0600'
+        checksum: "{{ oms_checksum | default(omit) }}"
+    - name: Install OMS-Agent for Linux
+      command: "sh onboard_agent.sh -w {{ monitor_workspaceid }} -s {{ monitor_workspacekey }}"
+      args:
+        chdir: /root
+        creates: /opt/microsoft/omsagent/bin
+      no_log: true
+    - name: Fix OMS files permissions
+      command: find /var/opt/microsoft/ -perm 666 -exec chmod 644 {} \;
+    - name: package install
+      package:
+        name:
+          - nmap
+          - jq
+          - python3
+          - python3-pip
+          # - python-is-python3 # Not on RHEL, only Debian/Ubuntu
+        state: present
+    - name: Add users
+      ansible.builtin.user:
+        name: "{{ item.username | lower }}"
+        password: "{{ item.password | default(omit) }}"
+        shell: /bin/bash
+        groups: users,docker
+        append: yes
+      loop: "{{ jumphost_linux_users }}"
+    - name: Set authorized key for users
+      authorized_key:
+        user: "{{ item.username | lower }}"
+        state: present
+        key: "{{  item.ssh_pubkey }}"
+      loop: "{{ jumphost_linux_users }}"

@@ -1,0 +1,38 @@
+---
+jumphost_base_rg: jump
+jumphost_base_name: jump
+azure_location: eastus
+jumphost_base_vn: 10.201.101.0/24
+jumphost_base_subnet: 10.201.101.0/25
+jumphost_base_vm_size: Standard_B2ms
+jumphost_azure_tags:
+  role: jumphost
+  setup: ansible
+jumphost_ip_whitelist_ssh:
+  - 1.1.1.1
+  # Azure Cloudshell:$ curl ifconfig.me
+  # https://techcommunity.microsoft.com/t5/itops-talk-blog/determining-the-public-ip-address-of-your-cloudshell-session/ba-p/1085251
+  # Azure IP Ranges and Service Tags – Public Cloud https://www.microsoft.com/en-us/download/details.aspx?id=56519
+jumphost_base_nsg_rules:
+  - name: SSH
+    protocol: Tcp
+    destination_port_range: 22
+    access: Allow
+    priority: 1001
+    direction: Inbound
+    source_address_prefix: "{{ jumphost_ip_whitelist_ssh }}"
+
+jumphost_vm_image:
+  version: latest
+  publisher: Canonical
+  # 18.04
+  # offer: UbuntuServer
+  # sku: '18.04-LTS'
+  # 20.04. https://github.com/Azure/azure-cli/issues/13320#issuecomment-649867249
+  #     https://azuremarketplace.microsoft.com/en-us/marketplace/apps/canonical.0001-com-ubuntu-server-focal?tab=overview
+  offer: 0001-com-ubuntu-server-focal
+  sku: '20_04-lts'
+  # shared image
+  # https://cloudblogs.microsoft.com/opensource/2019/11/07/ansible-2-9-azure-updates-new-modules/
+  # https://docs.microsoft.com/en-us/azure/developer/ansible/vm-configure-from-azure-shared-image-gallery?tabs=ansible#create-a-vm-based-on-the-generalized-image
+  # id: "/subscriptions/xxx/resourceGroups/xxx/providers/Microsoft.Compute/galleries/xxx/images/xxx/versions/latest"

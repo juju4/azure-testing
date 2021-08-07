@@ -23,6 +23,8 @@ $ brew install freetds
 * azure-sentinel-simple: basic log analytics and sentinel
 * azure-sentinel-az2go with https://github.com/OTRF/Azure-Sentinel2Go
 
+* azure-jumphost: Linux Jumphost with some system hardening and docker
+
 ## References
 
 * [installing ansible[azure] in same pip command as ansible doesn't work #67255](https://github.com/ansible/ansible/issues/67255#issuecomment-621408450)

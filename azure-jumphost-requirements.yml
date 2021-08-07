@@ -1,0 +1,19 @@
+---
+# requirements for azure-jumphost.yml
+
+- src: https://github.com/juju4/ansible-harden/
+  version: master
+  name: juju4.harden
+- src: https://github.com/juju4/ansible-falco/
+  version: master
+  name: juju4.falco
+- src: https://github.com/juju4/ansible-osquery/
+  version: master
+  name: juju4.osquery
+- src: https://github.com/juju4/ansible-auditd/
+  version: master
+  name: juju4.auditd
+- src: https://github.com/juju4/ansible-syslogclient/
+  version: master
+  name: juju4.syslogclient
+- name: geerlingguy.docker

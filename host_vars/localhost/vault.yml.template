@@ -1,0 +1,15 @@
+---
+# vault config
+
+jumphost_base_adminuser_login: 'myadmin'
+jumphost_base_adminuser_password: 'Myadmin1_to_change...'
+jumphost_base_adminuser_sshkeyfile: "/home/user/.ssh/id_rsa.pub"
+jumphost_base_adminuser_sshkeyfile_priv: "/home/user/.ssh/id_rsa"
+jumphost_base_adminuser_sshkey: "{{ lookup('file', jumphost_base_adminuser_sshkeyfile) }}"
+jumphost_linux_vm_ssh_keys:
+  # local, Azure Cloud Shell
+  - path: "/home/{{ jumphost_base_adminuser_login }}/.ssh/authorized_keys"
+    key_data: "{{ jumphost_base_adminuser_sshkey }}"
+  # other key from usual client
+  - path: "/home/{{ jumphost_base_adminuser_login }}/.ssh/authorized_keys"
+    key_data: "ssh-rsa xxx"
