@@ -17,14 +17,14 @@
     azure_location: eastus2
     azure_tags:
       tier: lab
-      project: azure-testing 
+      project: azure-testing
     az_object_id: "{{ lookup('env', 'AZURE_OBJECT_ID') }}"
     az_app_id: "{{ lookup('env', 'AZURE_CLIENT_ID') }}"
     az_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
     az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
     az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
-    sentinel_workspaceName: "{{ base_name }}-sentinel-workspace"
-    sentinel_userAssignedIdentityName: guid-app-registration
+    sentinel_workspacename: "{{ base_name }}-sentinel-workspace"
+    # sentinel_userassignedidentityname: guid-app-registration
     # sentinel_arm_dir: Azure-Sentinel2Go/azure-sentinel
     # sentinel_arm_parameters: azuredeploy-az2go.parameters.json.j2
     sentinel_arm_dir: Azure-Sentinel2Go/grocery-list/Win10
@@ -36,7 +36,7 @@
     sentinel_arm_win10_enable_sysmon: 'true'
     # Note: some c2 may block deployment when triggering security block
     sentinel_arm_win10_c2: 'None'
-    sentinel_arm_win10_securityCollection: 'Minimal'
+    sentinel_arm_win10_securitycollection: 'Minimal'
 
   collections:
     - azure.azcollection
@@ -91,7 +91,7 @@
         resource_type: workspaces
         provider: OperationalInsights
       register: workspaces2
-    
+
     - name: Set fact | workspaceid
       set_fact:
         workspaceid: "{{ workspaces2.response[0].properties.customerId }}"

@@ -14,7 +14,7 @@
     az_secret: "{{ lookup('env', 'AZURE_SECRET') }}"
     az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
     az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
-    sentinel_workspaceName: "{{ base_name }}-sentinel-workspace"
+    sentinel_workspacename: "{{ base_name }}-sentinel-workspace"
 
   collections:
     - azure.azcollection

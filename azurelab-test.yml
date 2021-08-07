@@ -5,7 +5,7 @@
 # https://docs.microsoft.com/en-us/azure/virtual-machines/linux/ansible-install-configure
 # https://github.com/erjosito/ansible-azure-lab
 # https://docs.microsoft.com/en-us/azure/developer/ansible/key-vault-configure-vm-security
-#$ pip install ansible[azure]
+# $ pip install ansible[azure]
 
 - name: Azure Cloud lab - infra
   hosts: localhost
@@ -33,23 +33,23 @@
       - object_id: "{{ az_object_id }}"
         tenant_id: "{{ az_tenant_id }}"
         keys:
-              - get
-              - list
-              - update
-              - create
-              - import
-              - delete
-              - recover
-              - backup
-              - restore
+          - get
+          - list
+          - update
+          - create
+          - import
+          - delete
+          - recover
+          - backup
+          - restore
         secrets:
-              - get
-              - list
-              - set
-              - delete
-              - recover
-              - backup
-              - restore
+          - get
+          - list
+          - set
+          - delete
+          - recover
+          - backup
+          - restore
     skip_azure_sdk: false  # Prevent azure_preview_modules of trying to update Python SDK
   collections:
     - azure.azcollection
@@ -103,7 +103,7 @@
         resource_group: "{{ base_rg }}"
         allocation_method: Dynamic
         name: "{{ publicip_name }}"
-        #domain_name_label: "{{ publicip_domain }}"
+        # domain_name_label: "{{ publicip_domain }}"
 
     # Keyvault
     # https://github.com/Azure-Samples/ansible-playbooks/blob/master/keyvault_create.yml
@@ -122,10 +122,10 @@
       azure_rm_keyvaultkey:
         key_name: MyKey
         keyvault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
-        #client_id: "{{ az_app_id }}"
-        #secret: "{{ az_secret }}"
-        #subscription_id: "{{ az_subscription_id }}"
-        #tenant: "{{ az_tenant_id }}"
+        # client_id: "{{ az_app_id }}"
+        # secret: "{{ az_secret }}"
+        # subscription_id: "{{ az_subscription_id }}"
+        # tenant: "{{ az_tenant_id }}"
       register: key1
     - name: Create a secret
       azure_rm_keyvaultsecret:
@@ -208,7 +208,7 @@
         frameworks:
           - name: "php"
             version: "7.4"
-        #scm_type: 'LocalGit'
+        # scm_type: 'LocalGit'
         scm_type: 'GitHub'
         startup_file: https://github.com/Azure-Samples/php-docs-hello-world
       register: webapp1
@@ -224,17 +224,17 @@
           name: standard_small
           tier: standard
           # FIXME: Error creating the Application Gateway instance: Azure Error: ApplicationGatewayInvalidPublicIpSku\nMessage: Application gateway /subscriptions/14fda389-54b3-4c60-a72e-da270d196a06/resourceGroups/azurelab0rg/providers/Microsoft.Network/applicationGateways/azurelab0appgateway001 with SKU WAF_v2 can only reference public ip with Standard SKU.
-          #name: waf_v2
-          #tier: waf_v2
+          # name: waf_v2
+          # tier: waf_v2
           capacity: 2
         gateway_ip_configurations:
           - subnet:
               id: "{{ appg_subnet1.response[0].id }}"
             name: app_gateway_ip_config
         frontend_ip_configurations:
-          #- subnet:
-          #    id: "{{ appg_subnet1.response[0].id }}"
-          #  name: sample_gateway_frontend_ip_config
+          # - subnet:
+          #     id: "{{ appg_subnet1.response[0].id }}"
+          #   name: sample_gateway_frontend_ip_config
           - public_ip_address: "{{ publicip_name }}"
             name: appGatewayFrontendIP
         frontend_ports:
@@ -249,7 +249,7 @@
             protocol: http
             cookie_based_affinity: enabled
             name: "{{ base_name }}webapp001"
-            #probe: "{{ base_name }}webapp001.azurewebsites.net"
+            # probe: "{{ base_name }}webapp001.azurewebsites.net"
         http_listeners:
           - frontend_ip_configuration: appGatewayFrontendIP
             frontend_port: ag_frontend_port

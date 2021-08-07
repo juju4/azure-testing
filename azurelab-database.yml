@@ -6,7 +6,7 @@
   connection: local
   gather_facts: no
   vars:
-    az_firewallRuleName: AllowedSrc
+    az_firewall_rulename: AllowedSrc
     ip_allowlist: 192.168.1.1
     base_name: azurelab0
     base_rg: "{{ base_name }}rg"
@@ -192,7 +192,7 @@
     # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/firewallrules/createorupdate
     - name: Set Firewall rule
       uri:
-        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/firewallRules/{{ az_firewallRuleName }}?api-version=2020-11-01-preview"
+        url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/firewallRules/{{ az_firewall_rulename }}?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
         method: PUT
