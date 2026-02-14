@@ -1,0 +1,93 @@
+---
+# https://docs.ansible.com/ansible/latest/scenario_guides/guide_azure.html
+# $ pip3 install ansible pywinrm pypsrp requests[socks]
+# $ pip3 install -r https://raw.githubusercontent.com/ansible-collections/azure/dev/requirements-azure.txt
+# $ ansible-galaxy collection install azure.azcollection
+# $ ansible-playbook azure-siftrem-destroy.yml -v
+
+- name: Destroy Azure infrastructure for siftrem
+  hosts: localhost
+  gather_facts: no
+  vars:
+    base_rg: investigate
+    base_name: investigate
+    vm_name: "{{ base_name }}vm"
+    azure_location: canadacentral
+    azurebastion: false
+    azureautoshutdown: false
+    vm_extra_disks:
+      - { n: siftrem-cases }
+      - { n: siftrem-archives }
+      # - { n: siftrem-docker }
+  tasks:
+    # FIXME: unmount first or shutdown vm?
+    - name: Detach extra disk(s) from VM
+      azure.azcollection.azure_rm_manageddisk:
+        name: "{{ item.n }}"
+        resource_group: "{{ base_rg }}"
+        managed_by: ''
+      with_items: "{{ vm_extra_disks }}"
+
+    - name: Destroy VM virtual machine
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ base_rg }}"
+        name: "{{ vm_name }}"
+        state: absent
+        remove_on_absent:
+          - all
+      no_log: true
+
+    - name: Destroy VM NIC
+      azure.azcollection.azure_rm_networkinterface:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}nic0"
+        state: absent
+
+    - name: Destroy VM public ip address
+      azure.azcollection.azure_rm_publicipaddress:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}PublicIP0"
+        state: absent
+
+    - name: Azure Bastion
+      when: azurebastion | bool
+      block:
+        - name: Destroy Azure Bastion
+          azure.azcollection.azure_rm_deployment:
+            resource_group: "{{ base_rg }}"
+            location: "{{ azure_location }}"
+            name: AzureBastion4BBB
+            state: absent
+          register: azurebastion
+
+        - name: Destroy Bastion subnet
+          azure.azcollection.azure_rm_subnet:
+            resource_group: "{{ base_rg }}"
+            virtual_network_name: "{{ base_name }}vn001"
+            name: "AzureBastionSubnet"
+            state: absent
+
+    - name: Destroy network security group
+      azure.azcollection.azure_rm_securitygroup:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}secgroup001"
+        state: absent
+    - name: Destroy virtual network
+      azure.azcollection.azure_rm_virtualnetwork:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}vn001"
+        state: absent
+
+    - name: Destroy subnet
+      azure.azcollection.azure_rm_subnet:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}subnet001"
+        virtual_network: "{{ base_name }}vn001"
+        state: absent
+
+        # General
+        # Not removing because of extra data managed disks?
+        # - name: Destroy resource group
+        #   azure_rm_resourcegroup:
+        #     name: "{{ base_rg }}"
+        #     state: absent

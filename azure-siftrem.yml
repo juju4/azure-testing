@@ -1,0 +1,659 @@
+---
+# https://docs.ansible.com/ansible/latest/scenario_guides/guide_azure.html
+# $ pip3 install ansible[azure] pywinrm pypsrp requests[socks]
+# $ ansible-galaxy collection install azure.azcollection
+# $ pip install -r ~/.ansible/collections/ansible_collections/azure/azcollection/requirements.txt
+# $ ansible-galaxy collection install community.general
+# $ ansible-playbook azure-siftrem.yml -v
+# ~5min for Azure infra
+# ~1h15 for VM host first time, ~15-20 min after
+# ~5min to destroy
+# ~/.azure/credentials with Contributor rights on target resource group and Reader at subscription level
+# validate variables in host_vars/localhost/{interpreter,azure}.yml
+
+- name: Create Azure infrastructure
+  hosts: localhost
+  gather_facts: no
+  vars:
+    ansible_python_interpreter: "{{ lookup('env', 'HOME') }}/tmp/venv-ansible/bin/python"
+    base_rg: investigate
+    base_name: investigate
+    # base_rg_disks: investigatedata
+    base_rg_disks: "{{ base_rg }}"
+    # azure_location: canadacentral
+    azure_location: westeurope
+    # azure_location: eastus
+    base_vn: 10.199.100.0/24
+    base_subnet: 10.199.100.0/25
+    # default 29GB disk +16-100GB tmp /mnt. may want more depending on investigation either on root disk or extra disk. 1 extra disk for base data/archives and one for work area /cases
+    # probably double-triple especially if full plaso/ELK
+    # base_vm_size: Standard_B2ms
+    base_vm_size: Standard_B4ms
+    # base_vm_size: Standard_D4_v3
+    # replicate down in VM vars
+    # make them different size to recognize more easily (/mnt temp space is ~100GB)
+    vm_extra_disks:
+      - { n: siftrem-cases, gb: 120, vm: "{{ base_name }}vm", mountpoint: /cases, dev: /dev/sdc, type: ext4 }
+      - { n: siftrem-archives, gb: 70, vm: "{{ base_name }}vm", mountpoint: /cases/archives, dev: /dev/sdd, type: ext4 }
+      - { n: siftrem-docker, gb: 60, vm: "{{ base_name }}vm", mountpoint: /var/lib/docker, dev: /dev/sde, type: ext4 }
+    base_adminuser_login: 'myadmin'
+    base_adminuser_password: 'Myadmin1_to_change...'
+    base_adminuser_sshkeyfile: "/home/user/.ssh/id_rsa.pub"
+    base_adminuser_sshkeyfile_priv: "/home/user/.ssh/id_rsa"
+    base_adminuser_sshkey: "{{ lookup('file', base_adminuser_sshkeyfile) }}"
+    linux_vm_ssh_keys:
+      - path: "/home/{{ base_adminuser_login }}/.ssh/authorized_keys"
+        key_data: "{{ base_adminuser_sshkey }}"
+    azure_rg_tags:
+      role: testing,investigation
+      delete: after1day
+      environment: "production"
+      engcontact: "me"
+    azure_tags: "{{ azure_rg_tags }}"
+    az_image:
+      version: latest
+      publisher: Canonical
+      # https://github.com/Azure/azure-cli/issues/13320#issuecomment-649867249
+      # https://documentation.ubuntu.com/azure/azure-how-to/instances/find-ubuntu-images/
+      # https://marketplace.microsoft.com/en-us/product/virtual-machines/canonical.ubuntu-24_04-lts?tab=Overview
+      offer: ubuntu-24_04-lts
+      sku: 'server'
+    # az_image:
+    #   id: /subscriptions/GUID/resourceGroups/RG/providers/Microsoft.Compute/galleries/GALLERT/images/IMAGE/versions/latest
+    azurebastion: false
+    azureautoshutdown: false
+    base_nsg_rules:
+      - name: SSH
+        protocol: Tcp
+        destination_port_range: 22
+        access: Allow
+        priority: 1001
+        direction: Inbound
+        source_address_prefix: "{{ az_ip_whitelist_ssh }}"
+      - name: HTTPS
+        protocol: Tcp
+        destination_port_range: 443
+        access: Allow
+        priority: 1007
+        direction: Inbound
+        source_address_prefix: "{{ az_ip_whitelist_ssh }}"
+      - name: xRDP
+        protocol: Tcp
+        destination_port_range: 3389
+        access: Allow
+        priority: 1010
+        direction: Inbound
+        source_address_prefix: "{{ az_ip_whitelist_ssh }}"
+      - name: Misc
+        protocol: Tcp
+        destination_port_range: 9999
+        access: Allow
+        priority: 1020
+        direction: Inbound
+      # - name: Test-CatchAll
+      #   #protocol: Tcp
+      #   destination_port_range: 1024-65535
+      #   # to avoid ports with Azure warning (rdp/3389, postgres/5432...)
+      #   #destination_port_range: 6000-65535
+      #   access: Allow
+      #   priority: 1100
+      #   direction: Inbound
+      #   source_address_prefix: "*"
+      - name: DNS-Udp-Out
+        protocol: Udp
+        destination_port_range: 53
+        access: Allow
+        priority: 2001
+        direction: Outbound
+        source_address_prefix: "*"
+      - name: HTTPS-Out
+        protocol: Tcp
+        destination_port_range: 443
+        access: Allow
+        priority: 2002
+        direction: Outbound
+        source_address_prefix: "*"
+      - name: HTTP-Out
+        protocol: Tcp
+        destination_port_range: 80
+        access: Allow
+        priority: 2003
+        direction: Outbound
+        source_address_prefix: "*"
+  handlers:
+    - name: Wait a bit if vm state changed to ensure system is up
+      ansible.builtin.pause:
+        seconds: 5
+  tasks:
+    # General
+    - name: Create resource group
+      azure.azcollection.azure_rm_resourcegroup:
+        name: "{{ base_rg }}"
+        location: "{{ azure_location }}"
+        tags: "{{ azure_rg_tags }}"
+
+    - name: Create virtual network
+      azure.azcollection.azure_rm_virtualnetwork:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}vn001"
+        address_prefixes: "{{ base_vn }}"
+        tags: "{{ azure_tags }}"
+
+    - name: Add subnet
+      azure.azcollection.azure_rm_subnet:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}subnet001"
+        address_prefix: "{{ base_subnet }}"
+        virtual_network: "{{ base_name }}vn001"
+
+    # https://docs.microsoft.com/en-us/azure/bastion/bastion-create-host-portal
+    # Bastion will require RSA private key or password
+    - name: AzureBastion
+      when: azurebastion | bool
+      block:
+        - name: Add Bastion subnet
+          azure.azcollection.azure_rm_subnet:
+            resource_group: "{{ base_rg }}"
+            name: "AzureBastionSubnet"
+            address_prefix: "192.168.250.0/24"
+            virtual_network: "{{ base_name }}vn001"
+
+        - name: Create Azure Bastion
+          azure.azcollection.azure_rm_deployment:
+            resource_group: "{{ base_rg }}"
+            location: "{{ azure_location }}"
+            name: AzureBastion4siftrem
+            parameters:
+              vnet-name:
+                value: "{{ base_name }}vn001"
+              vnet-ip-prefix:
+                value: "{{ base_vn }}"
+              vnet-new-or-existing:
+                value: 'existing'
+              bastion-subnet-ip-prefix:
+                value: '192.168.250.0/24'
+              location:
+                value: "{{ azure_location }}"
+            template_link: 'https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/101-azure-bastion/azuredeploy.json'
+          register: azurebastion
+
+    - name: Create network security group
+      azure.azcollection.azure_rm_securitygroup:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}secgroup001"
+        rules: "{{ base_nsg_rules }}"
+        tags: "{{ azure_tags }}"
+
+    # Linux
+    - name: Create VM public ip address
+      azure.azcollection.azure_rm_publicipaddress:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}PublicIP0"
+        allocation_method: Static
+        tags: "{{ azure_tags }}"
+      register: vm_public_ip
+
+    - name: Create VM NIC
+      azure.azcollection.azure_rm_networkinterface:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}nic0"
+        virtual_network: "{{ base_name }}vn001"
+        subnet: "{{ base_name }}subnet001"
+        security_group: "{{ base_name }}secgroup001"
+        ip_configurations:
+          - name: ipconfig1
+            public_ip_address_name: "{{ base_name }}PublicIP0"
+        tags: "{{ azure_tags }}"
+
+    - name: Create VM virtual machine
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}vm"
+        vm_size: "{{ base_vm_size | default('Standard_D1_v2') }}"
+        managed_disk_type: "{{ base_managedisk | default('Standard_LRS') }}"
+        boot_diagnostics:
+          # if enabled and tag is enforced by policy, must create storage account first with tag
+          # automated creation does not inherit tag from vm
+          enabled: no
+          # storage_account: <name>
+        admin_username: "{{ base_adminuser_login }}"
+        admin_password: "{{ base_adminuser_password }}"
+        # ssh_password_enabled: false
+        # for bastion
+        ssh_password_enabled: true
+        ssh_public_keys: "{{ linux_vm_ssh_keys }}"
+        network_interfaces: "{{ base_name }}nic0"
+        image: "{{ az_image }}"
+        tags: "{{ azure_tags }}"
+      register: vmout
+      notify:
+        - Wait a bit if vm state changed to ensure system is up
+
+    # https://www.danielstechblog.io/integrate-auto-shutdown-configuration-arm-template-deployments-azure-vms
+    # https://github.com/Azure/azure-quickstart-templates/blob/93a40671f278a846aef3addae8d0a13a69f58c88/sharepoint-adfs/azuredeploy.json#L1101
+    - name: Auto-shutdown
+      when: azureautoshutdown
+      block:
+        - name: Add auto-shutdown
+          azure.azcollection.azure_rm_deployment:
+            resource_group: "{{ base_rg }}"
+            location: "{{ azure_location }}"
+            name: AzureAutoShutdown
+            parameters:
+              vmname:
+                value: "{{ base_name }}vm"
+              vnet-ip-prefix:
+                value: "{{ base_vn }}"
+            template_link: autoshutdown.json
+          register: azurebastion
+
+    - name: Create separate data resource group
+      azure.azcollection.azure_rm_resourcegroup:
+        name: "{{ base_rg_disks }}"
+        location: "{{ azure_location }}"
+        tags: "{{ azure_tags }}"
+      when: base_rg_disks != base_rg
+
+    - name: Get facts for VM
+      azure.azcollection.azure_rm_virtualmachine_info:
+        resource_group: "{{ base_rg }}"
+        name: "{{ base_name }}vm"
+      register: vmfacts
+    - name: Debug | VM facts
+      ansible.builtin.debug:
+        var: vmfacts
+        verbosity: 1
+    # - pause:
+
+    # FIXME: this does not seem idempotent and disk are detached/re-attached with different device paths...
+    - name: Add disk(s) to VM
+      azure.azcollection.azure_rm_manageddisk:
+        name: "{{ item.n }}"
+        location: "{{ azure_location }}"
+        resource_group: "{{ base_rg_disks }}"
+        disk_size_gb: "{{ item.gb }}"
+        # FIXME: ansible restriction, must be in same rg, seems not at azure level
+        # https://docs.ansible.com/ansible/latest/collections/azure/azcollection/azure_rm_manageddisk_module.html
+        # https://social.msdn.microsoft.com/Forums/azure/en-US/5aef7a98-8f49-45d1-97b3-0a50f62799dc/vm-with-managed-disk-in-separate-resource-group
+        managed_by: "{{ item.vm }}"
+        # attach_caching: read_only
+        tags: "{{ azure_tags }}"
+      with_items: "{{ vm_extra_disks }}"
+      register: disks
+      when: >
+        vmfacts['vms'][0]['data_disks'] == [] or
+        vmfacts['vms'][0]['data_disks'][0]['disk_size_gb'] != vm_extra_disks[0]['gb']
+    - name: Debug | extra disks
+      ansible.builtin.debug:
+        var: disks
+        verbosity: 1
+
+    - name: Add instance to the host group
+      ansible.builtin.add_host:
+        hostname: "{{ base_name }}"
+        ansible_host: "{{ vm_public_ip.state.ip_address }}"
+        ansible_user: "{{ base_adminuser_login }}"
+        ansible_ssh_private_key_file: "{{ base_adminuser_sshkeyfile_priv }}"
+        groups:
+          - azure_vms
+          - siftrem
+
+- name: Add host to local ssh config for jumphost
+  hosts: localhost
+  connection: local
+  tasks:
+    # FIXME! dumping more than siftrem group and include secrets
+    - name: Debug | hostvars
+      ansible.builtin.debug:
+        var: "{{ hostvars[item] }}"
+      with_items: "{{ groups['siftrem'] | default([]) }}"
+      when: false
+    - name: Edit local ~/.ssh/config
+      ansible.builtin.blockinfile:
+        path: /home/user/.ssh/config
+        marker: "# {mark} ANSIBLE MANAGED BLOCK {{ hostvars[item].ansible_host }} - siftrem"
+        block: |
+          # {{ hostvars[item].inventory_hostname }}
+          Host {{ hostvars[item].ansible_host }}
+              Hostname {{ hostvars[item].ansible_host }}
+              User {{ hostvars[item].ansible_user }}
+              IdentityFile {{ hostvars[item].ansible_ssh_private_key_file }}
+              {% if jumphost_required is defined and jumphost_required %}
+              ForwardAgent yes
+              LocalForward 3389 localhost:3389
+              DynamicForward 8080
+              ProxyJump {{ jumphost_ssh }}
+              {% endif %}
+      with_items: "{{ groups['siftrem'] | default([]) }}"
+      # when: false
+
+- name: Configure VM host
+  hosts: siftrem
+  # hosts: nohost
+  become: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    base_name: investigate
+    vm_extra_disks_initialize: true
+    vm_extra_disks:
+      # exec for timesketch
+      - { n: siftrem-cases, gb: 120, vm: "{{ base_name }}vm", mountpoint: /cases, dev: /dev/sdc, type: ext4, opts: 'defaults,user,nodev,nosuid,exec' }
+      - { n: siftrem-archives, gb: 70, vm: "{{ base_name }}vm", mountpoint: /cases/archives, dev: /dev/sdd, type: ext4 }
+      - { n: siftrem-docker, gb: 60, vm: "{{ base_name }}vm", mountpoint: /var/lib/docker, dev: /dev/sde, type: ext4 }
+    zerotier_enable: false
+    zerotier_conf: /home/user/QubesIncoming/vault/20200719-zerotier-5d8c20d7be+join.tar.gz
+    archives_dir: /usr/local/share/Toolset
+    ubuntu_if: eth0
+    ## ensure consistency between sift and remnux values
+    sift_hostname: 'siftremworkstation'
+    sift_user: 'sansforensics'
+    sift_public_keys: []
+    # xrdp requires "complex" password: Forensics2021
+    # must be encrypted form eg `ansible all -i localhost, -m debug -a "msg={{ 'mypassword' | password_hash('sha512', 'mysecretsalt') }}"`
+    #  or `mkpasswd --method=sha-512`
+    #  https://docs.ansible.com/ansible/latest/reference_appendices/faq.html#how-do-i-generate-encrypted-passwords-for-the-user-module
+    sift_pass: '$6$bQ4TcSUvS$HNd/LTN2uj.Gptq7XkKbnB0z79V023xR6bokyYOTzybOZmQ30FDR8i/fTmuxmjSJSOb1mxCf9mVa/S/ukZFBo0'
+    sift_do_x11: false
+    sift_webserver: nginx
+    remnux_hostname: "{{ sift_hostname }}"
+    remnux_user: "{{ sift_user }}"
+    remnux_pass: "{{ sift_pass }}"
+    remnux_do_x11: true
+    remnux_webserver: nginx
+    # enable ramdisk?
+    # ramdisk_size: 4096m
+    ## pkg_resources.VersionConflict: (six 1.5.2 (/usr/lib/python2.7/dist-packages), Requirement.parse('six>=1.6.0'))
+    faup_virtualenv_user: "{{ sift_user }}"
+    faup_virtualenv_home: "/home/{{ faup_virtualenv_user }}"
+    faup_virtualenv_path: "{{ faup_virtualenv_home }}/env-python"
+    faup_ownership:
+      - { d: /home/sansforensics/.cache/pip, s: directory, m: '0755', o: "{{ sift_user }}" }
+      - { d: "{{ toolsetdir }}/faup/src/lib/bindings/python/build", s: directory, m: '0755', o: "{{ sift_user }}" }
+      - { d: "{{ toolsetdir }}/faup/src/lib/bindings/python/pyfaup.egg-info", s: directory, m: '0755', o: "{{ sift_user }}" }
+    #  dl: https://download3.vmware.com/software/player/file/VMware-Player-15.5.6-16341506.x86_64.bundle
+    #       => can't compile kernel modules
+    #  virtualbox from repo: ok only for 32 bits on Azure
+    tinyproxy_proxy_url: 'http://localhost:8888'
+    tinyproxy_filterdefaultdeny: 'No'
+    # tinyproxy_filterdefaultdeny: 'Yes'
+    # tinyproxy_filters:
+    #   - linux-ubuntu-filter
+    timesketch_setup: docker
+    timesketch_docker_elasticmem: 8
+    timesketch_port: 80
+    # timesketch_setup: native
+    elasticsearch_repo_version: 7.x
+    elasticsearch_script_inline: true
+    postgresql_users:
+      - name: timesketch
+        password: timesketch
+        db: timesketchdb
+    postgresql_databases:
+      - name: timesketchdb
+    timesketch_userlist:
+      - { u: "{{ sift_user }}", p: "{{ sift_pass }}" }
+    timesketch_plaso_uploading_dir: /cases/tmp
+    timesketch_root: /cases/timesketch
+    timesketch_process: false
+    timesketch_process_dl: false
+    timesketch_importer_timeline: 202103-thedfirreport-exercise
+    timesketch_importer_user: "{{ sift_user }}"
+    timesketch_importer_pass: "{{ sift_pass }}"
+    timesketch_process_url: []
+    timesketch_process_sketchid: 1
+    timesketch_process_files:
+      - { url: /cases/202103-thedfirreport-exercise/data/Logs/DC, plasofile: /cases/202103-thedfirreport-exercise/data/Logs/DC }
+      - { url: /cases/202103-thedfirreport-exercise/data/Logs/OfficePC, plasofile: /cases/202103-thedfirreport-exercise/data/Logs/OfficePC }
+      - { url: '/cases/202103-thedfirreport-exercise/data/Network Traffic/exercise.pcap', plasofile: /cases/202103-thedfirreport-exercise/data/NetworkTraffic }
+    files_processing: false
+    files_upload:
+      - { s: /home/user/tmp/202103-thedfirreport-exercise/archives/Logs.zip, d: /cases/archives/202103-thedfirreport-exercise/Logs.zip }
+      - { s: /home/user/tmp/202103-thedfirreport-exercise/archives/Memory.zip, d: /cases/archives/202103-thedfirreport-exercise/Memory.zip }
+      - { s: /home/user/tmp/202103-thedfirreport-exercise/archives/OneDrive_2021-03-31.zip, d: /cases/archives/202103-thedfirreport-exercise/OneDrive_2021-03-31.zip }
+    files_unarchive:
+      - { s: /cases/archives/202103-thedfirreport-exercise/Logs.zip, d: /cases/202103-thedfirreport-exercise/data }
+      - { s: /cases/archives/202103-thedfirreport-exercise/Memory.zip, d: /cases/202103-thedfirreport-exercise/data }
+      - { s: /cases/archives/202103-thedfirreport-exercise/OneDrive_2021-03-31.zip, d: /cases/202103-thedfirreport-exercise/data }
+      - { s: /cases/202103-thedfirreport-exercise/data/Memory/DC-20210328-234627.zip, d: /cases/202103-thedfirreport-exercise/data/Memory, opts: "-Pinfected", t: /cases/202103-thedfirreport-exercise/data/Memory/DC-20210328-234627.dmp }
+      - { s: /cases/202103-thedfirreport-exercise/data/Memory/OFFICEPC1-20210328-235752.zip, d: /cases/202103-thedfirreport-exercise/data/Memory, opts: "-Pinfected", t: /cases/202103-thedfirreport-exercise/data/Memory/OFFICEPC1-20210328-235752.dmp }
+    files_unarchive_7z:
+      - { s: /cases/202103-thedfirreport-exercise/data/Logs/DC.7z, chdir: /cases/202103-thedfirreport-exercise/data/Logs, p: infected, t: /cases/202103-thedfirreport-exercise/data/Logs/DC/auto }
+      - { s: /cases/202103-thedfirreport-exercise/data/Logs/OfficePC.7z, chdir: /cases/202103-thedfirreport-exercise/data/Logs, p: infected, t: /cases/202103-thedfirreport-exercise/data/Logs/OfficePC/auto }
+      - { s: /cases/202103-thedfirreport-exercise/data/Logs/pstranscripts.7z, chdir: /cases/202103-thedfirreport-exercise/data/Logs, p: infected, t: /cases/202103-thedfirreport-exercise/data/Logs/pstranscripts }
+      - { s: '/cases/202103-thedfirreport-exercise/data/Network Traffic/exercise.7z', chdir: '/cases/202103-thedfirreport-exercise/data/Network Traffic', p: infected, t: '/cases/202103-thedfirreport-exercise/data/Network Traffic/exercise.pcap' }
+    files_evtx_json_export:
+      - s: /cases/202103-thedfirreport-exercise/data/Logs/DC/auto/C%3A/Windows/System32/winevt/Logs
+        d: /cases/202103-thedfirreport-exercise/extract/DC-
+        list:
+          - Application.evtx
+          - Microsoft-Windows-Sysmon%254Operational.evtx
+          - Microsoft-Windows-TerminalServices-RDPClient%254Operational.evtx
+          - Security.evtx
+          - Setup.evtx
+          - System.evtx
+      - s: /cases/202103-thedfirreport-exercise/data/Logs/OfficePC/auto/C%3A/Windows/System32/winevt/Logs
+        d: /cases/202103-thedfirreport-exercise/extract/OfficePC-
+        list:
+          - Application.evtx
+          - Microsoft-Windows-Sysmon%254Operational.evtx
+          - Microsoft-Windows-TerminalServices-RDPClient%254Operational.evtx
+          - Security.evtx
+          - Setup.evtx
+          - System.evtx
+    firefox_allowonly_extensions:
+      - id: "https-everywhere@eff.org"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/https-everywhere/latest.xpi"
+      - id: "uBlock0@raymondhill.net"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi"
+      - id: "jid1-MnnxcxisBPnSXQ@jetpack"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/privacy-badger17/latest.xpi"
+      - id: "{0b457cAA-602d-484a-8fe7-c1d894a011ba}"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/fireshot/latest.xpi"
+      - id: "{73a6fe31-595d-460b-a920-fcc0f8843232}"
+        mode: "forece_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/noscript/latest.xpi"
+      - id: "foxyproxy@eric.h.jung"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/foxyproxy-standard/latest.xpi"
+      - id: "{f1423c11-a4e2-4709-a0f8-6d6a68c83d08}"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/latest/hacktools/latest.xpi"
+      - id: "{4c98c9c7-fc13-4622-b08a-a18923469c1c}"
+        mode: "force_installed"
+        url: "https://addons.mozilla.org/firefox/downloads/file/3590348/hackbar-2.3.1-fx.xpi"
+    cases_directory:
+      - /cases/202103-thedfirreport-exercise/archives
+      - /cases/202103-thedfirreport-exercise/data
+      - /cases/202103-thedfirreport-exercise/extract
+      - /cases/archives/202103-thedfirreport-exercise
+      - /cases/tmp
+    monitoring_enable: false
+  pre_tasks:
+    - name: Set root password
+      ansible.builtin.user:
+        name: root
+        password: "{{ root_password | default(omit) }}"
+        update_password: always
+    # https://docs.microsoft.com/en-us/azure/virtual-machines/linux/attach-disk-portal
+    # VM: lsblk -o NAME,HCTL,SIZE,MOUNTPOINT | grep -i "sd"
+    # fdisk, mkfs.ext4, mnt
+    - name: Check visible disks
+      ansible.builtin.command: lsblk -o NAME,HCTL,SIZE,MOUNTPOINT
+      changed_when: false
+      register: lsblk
+    - name: Available disks
+      ansible.builtin.debug:
+        var: lsblk.stdout_lines
+        verbosity: 2
+    # - pause:
+    - name: Extra disks
+      when: vm_extra_disks_initialize
+      block:
+        - name: Partition extra disk(s) if not already
+          community.general.parted:
+            device: "{{ item.dev }}"
+            number: 1
+            state: present
+            fs_type: "{{ item.type }}"
+          with_items: "{{ vm_extra_disks }}"
+        - name: Format extra disk(s) if not already
+          community.general.filesystem:
+            fstype: "{{ item.type }}"
+            dev: "{{ item.dev }}1"
+          with_items: "{{ vm_extra_disks }}"
+    - name: Ensure extra disk(s) are in fstab and mounted
+      ansible.posix.mount:
+        path: "{{ item.mountpoint }}"
+        src: "{{ item.dev }}1"
+        opts: "{{ item.opts | default('defaults,user,nodev,nosuid') }}"
+        state: mounted
+        fstype: "{{ item.type }}"
+      with_items: "{{ vm_extra_disks }}"
+
+    - name: Debian | update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_facts['os_family'] == 'Debian'
+    - name: Ensure unarchive tools are present
+      ansible.builtin.package:
+        name: ['unzip', 'p7zip-full']
+        state: present
+    - name: Case files
+      when: files_processing
+      block:
+        - name: Ensure target directory exists
+          ansible.builtin.file:
+            path: "{{ item }}"
+            mode: '0755'
+            # not existing at this stage...
+            # owner: "{{ sift_user }}"
+            state: directory
+          with_items: "{{ cases_directory | default([]) }}"
+        - name: Upload cases files
+          ansible.builtin.copy:
+            src: "{{ item.s }}"
+            dest: "{{ item.d }}"
+            mode: '0644'
+          with_items: "{{ files_upload }}"
+          # when: false
+        - name: Unarchive cases files
+          ansible.builtin.unarchive:
+            src: "{{ item.s }}"
+            dest: "{{ item.d }}"
+            extra_opts: "{{ item.opts | default(omit) }}"
+            creates: "{{ item.t | default(omit) }}"
+            # mode: '0644'
+            remote_src: true
+          with_items: "{{ files_unarchive }}"
+        - name: Unarchive cases files 7z
+          ansible.builtin.command: "7z x -p{{ item.p }} '{{ item.s }}'"
+          args:
+            chdir: "{{ item.chdir }}"
+            creates: "{{ item.t | default(omit) }}"
+          with_items: "{{ files_unarchive_7z }}"
+        - name: Debug
+          ansible.builtin.debug:
+            var: "{{ item }}"
+          loop:
+            - proxy_url
+            - ansible_facts.env
+  roles:
+    - geerlingguy.docker
+    - geerlingguy.nodejs
+    # - juju4.sift
+    # - juju4.remnux
+    # - juju4.siftrem
+    - juju4.brim
+    - juju4.tinyproxy
+    # - geerlingguy.docker
+    # - geerlingguy.elasticsearch
+    # - geerlingguy.postgresql
+    # - geerlingguy.redis
+    # - juju4.timesketch
+    # alternative: x2goserver x2goserver-session
+    - juju4.xrdp
+    - juju4.firefox_config
+    - juju4.harden_systemd
+    # - juju4.pystemon
+    - { role: m4rcu5nl.zerotier-one, when: zerotier_enable|bool }
+    - { role: prometheus.prometheus.node_exporter, when: monitoring_enable|bool }
+    - { role: prometheus.prometheus.systemd_exporter, when: monitoring_enable|bool }
+    - { role: prometheus.prometheus.process_exporter, when: monitoring_enable|bool }
+    - { role: prometheus.prometheus.blackbox_exporter, when: monitoring_enable|bool }
+    - { role: prometheus.prometheus.prometheus, when: monitoring_enable|bool }
+    ## required extra config grafana_ini...
+    # - { role: grafana.grafana.grafana, when: monitoring_enable|bool }
+  tasks:
+    - name: Check host is reachable
+      ansible.builtin.ping:
+    - name: ZeroTier
+      when: zerotier_enable
+      block:
+        - name: Stop ZeroTier before restoration
+          ansible.builtin.service:
+            name: zerotier-one
+            state: stopped
+        - name: Restore ZeroTier config
+          ansible.builtin.unarchive:
+            src: "{{ zerotier_conf }}"
+            dest: /var/lib/zerotier-one
+            mode: '0700'
+          notify:
+            - Restart zerotier
+        - name: Flush handlers
+          ansible.builtin.meta: flush_handlers
+        - name: Ensure ZeroTier started
+          ansible.builtin.service:
+            name: zerotier-one
+            state: started
+        - name: Check zerotier
+          ansible.builtin.command: "{{ item }}"
+          with_items:
+            - zerotier-cli status
+            - zerotier-cli listnetworks
+          changed_when: false
+          register: zt
+        - name: Debug | var zt
+          ansible.builtin.debug:
+            var: zt
+    - name: Update latest packages
+      ansible.builtin.package:  # noqa package-latest
+        name: '*'
+        state: latest
+    - name: Evtx to json export
+      ansible.builtin.shell: "evtx_dump '{{ item.0.s }}/{{ item.1 }}' -o json > '{{ item.0.d }}{{ item.1 | regex_replace('.evtx$', '.json') }}'"
+      args:
+        creates: "{{ item.0.d }}{{ item.1 | regex_replace('.evtx$', '.json') }}"
+      loop: "{{ files_evtx_json_export | subelements('list') }}"
+      when: files_processing
+      # TODO PS1 with time
+  handlers:
+    - name: Restart zerotier
+      ansible.builtin.service:
+        name: zerotier-one
+        state: restarted
+
+# - name: siftrem validation
+#   import_playbook: ../git-roles/juju4.siftrem/molecule/default/verify.yml
+
+# shutdown at end if not used directly?
+- name: Azure VM halt
+  hosts: localhost
+  gather_facts: no
+  vars:
+    base_rg: investigate
+    base_name: "{{ base_rg }}"
+    vm_name: "{{ base_name }}vm"
+  tasks:
+    - name: Stop VM
+      azure.azcollection.azure_rm_virtualmachine:
+        resource_group: "{{ base_rg }}"
+        name: "{{ vm_name }}"
+        started: no
+      when: false
