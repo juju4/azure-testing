@@ -4,20 +4,49 @@ roles:
   - src: https://github.com/juju4/ansible-auditd/
     version: main
     name: juju4.auditd
+  - src: https://github.com/juju4/ansible-brim/
+    version: main
+    name: juju4.brim
   - src: https://github.com/juju4/ansible-falco/
     version: main
     name: juju4.falco
+  - src: https://github.com/juju4/ansible-firefox-config/
+    version: main
+    name: juju4.firefox_config
   - src: https://github.com/juju4/ansible-harden/
     version: main
     name: juju4.harden
+  - src: https://github.com/juju4/ansible-harden-systemd/
+    version: main
+    name: juju4.harden_systemd
   - src: https://github.com/juju4/ansible-osquery/
     version: main
     name: juju4.osquery
+  - src: https://github.com/juju4/ansible-remnux/
+    version: main
+    name: juju4.remnux
+  - src: https://github.com/juju4/ansible-sift/
+    version: main
+    name: juju4.sift
+  - src: https://github.com/juju4/ansible-siftrem/
+    version: main
+    name: juju4.siftrem
   - src: https://github.com/juju4/ansible-syslogclient/
     version: main
     name: juju4.syslogclient
+  - src: https://github.com/juju4/ansible-tinyproxy/
+    version: main
+    name: juju4.tinyproxy
+  - src: https://github.com/juju4/ansible-xrdp/
+    version: main
+    name: juju4.xrdp
   - name: geerlingguy.docker
     src: https://github.com/juju4/ansible-role-docker-1
     version: master
   - name: geerlingguy.nodejs
     version: 7.1.0
+  - name: m4rcu5nl.zerotier-one
+    version: 1.2.3
+
+collections:
+  - name: prometheus.prometheus
