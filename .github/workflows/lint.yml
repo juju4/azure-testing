@@ -1,0 +1,61 @@
+---
+name: lint
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+    env:
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install --pre ansible-lint flake8 yamllint
+          which ansible
+          pip3 install ansible
+          pip3 show ansible
+          ls -l $HOME/.local/bin || true
+          ansible --version
+      - name: Environment
+        run: |
+          pwd
+          env
+          find . -ls
+      - uses: codespell-project/actions-codespell@master
+        with:
+          ignore_words_file: ${{ env.ANSIBLE_ROLE }}/.codespellignore
+          skip: .git
+          path: ${{ env.ANSIBLE_ROLE }}
+        if: ${{ always() }}
+      - name: yamllint
+        run: |
+          cd $GITHUB_WORKSPACE && yamllint .
+        if: ${{ always() }}
+      - name: ansible-lint
+        run: |
+          cd $GITHUB_WORKSPACE && ansible-lint
+        if: ${{ always() }}
+      - name: Run Checkov action
+        id: checkov
+        uses: bridgecrewio/checkov-action@02a4c5d6a02367e5ea493c34c26b094302fd3f61
+        with:
+          soft_fail: true
+          download_external_modules: true
+          github_pat: ${{ secrets.GH_PAT }}
