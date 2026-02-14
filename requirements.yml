@@ -1,0 +1,9 @@
+---
+
+roles:
+  - src: https://github.com/juju4/ansible-falco/
+    version: main
+    name: juju4.falco
+  - name: geerlingguy.docker
+    src: https://github.com/juju4/ansible-role-docker-1
+    version: master
