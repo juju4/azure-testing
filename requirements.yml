@@ -46,7 +46,6 @@ roles:
   - name: geerlingguy.nodejs
     version: 7.1.0
   - name: m4rcu5nl.zerotier-one
-    version: 1.2.3
 
 collections:
   - name: prometheus.prometheus
