@@ -16,13 +16,11 @@
     az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
     sentinel_workspacename: "{{ base_name }}-sentinel-workspace"
 
-  collections:
-    - azure.azcollection
   tasks:
 
     # General
     - name: Destroy Sentinel resource group
-      azure_rm_resourcegroup:
+      azure.azcollection.azure_rm_resourcegroup:
         name: "{{ base_rg }}"
         location: "{{ azure_location }}"
         state: absent

@@ -51,44 +51,43 @@
           - backup
           - restore
     skip_azure_sdk: false  # Prevent azure_preview_modules of trying to update Python SDK
-  collections:
-    - azure.azcollection
+
   tasks:
 
     # General
     - name: Create resource group
-      azure_rm_resourcegroup:
+      azure.azcollection.azure_rm_resourcegroup:
         name: "{{ base_rg }}"
         location: "{{ azure_location }}"
         tags: "{{ azure_tags }}"
 
     - name: Create virtual network
-      azure_rm_virtualnetwork:
+      azure.azcollection.azure_rm_virtualnetwork:
         resource_group: "{{ base_rg }}"
         name: "{{ base_name }}vn001"
         address_prefixes: "{{ base_vn }}"
         tags: "{{ azure_tags }}"
 
     - name: Add subnet
-      azure_rm_subnet:
+      azure.azcollection.azure_rm_subnet:
         resource_group: "{{ base_rg }}"
         name: "{{ base_name }}subnet001"
         address_prefix: "{{ base_subnet }}"
         virtual_network: "{{ base_name }}vn001"
 
     - name: Add Appgateway virtual network
-      azure_rm_virtualnetwork:
+      azure.azcollection.azure_rm_virtualnetwork:
         resource_group: "{{ base_rg }}"
         name: "{{ base_name }}vn002"
         address_prefixes: "{{ appg_vn }}"
     - name: Add Appgateway subnet
-      azure_rm_subnet:
+      azure.azcollection.azure_rm_subnet:
         resource_group: "{{ base_rg }}"
         name: "{{ appg_subnet_name }}"
         address_prefix: "{{ appg_subnet }}"
         virtual_network: "{{ base_name }}vn002"
     - name: Get info of Subnet
-      azure_rm_resource_facts:
+      azure.azcollection.azure_rm_resource_info:
         api_version: '2018-08-01'
         resource_group: "{{ base_rg }}"
         provider: network
@@ -99,7 +98,7 @@
             name: "{{ appg_subnet_name }}"
       register: appg_subnet1
     - name: Create a public IP address - AppGateway
-      azure_rm_publicipaddress:
+      azure.azcollection.azure_rm_publicipaddress:
         resource_group: "{{ base_rg }}"
         allocation_method: Dynamic
         name: "{{ publicip_name }}"
@@ -108,7 +107,7 @@
     # Keyvault
     # https://github.com/Azure-Samples/ansible-playbooks/blob/master/keyvault_create.yml
     - name: Create instance of Key Vault
-      azure_rm_keyvault:
+      azure.azcollection.azure_rm_keyvault:
         resource_group: "{{ base_rg }}"
         vault_name: "{{ base_name }}keyvault001"
         enabled_for_deployment: yes
@@ -119,7 +118,7 @@
         access_policies: "{{ keyvault_access_policies }}"
       register: kv
     - name: Create a key
-      azure_rm_keyvaultkey:
+      azure.azcollection.azure_rm_keyvaultkey:
         key_name: MyKey
         keyvault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
         # client_id: "{{ az_app_id }}"
@@ -128,17 +127,17 @@
         # tenant: "{{ az_tenant_id }}"
       register: key1
     - name: Create a secret
-      azure_rm_keyvaultsecret:
+      azure.azcollection.azure_rm_keyvaultsecret:
         secret_name: MySecret
         secret_value: My_Pass_Sec
         keyvault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
       register: secret1
     - name: Get Key Vault by name
-      azure_rm_keyvault_info:
+      azure.azcollection.azure_rm_keyvault_info:
         resource_group: myResourceGroup
         name: "{{ base_name }}keyvault001"
     - name: Get latest version of specific key
-      azure_rm_keyvaultkey_info:
+      azure.azcollection.azure_rm_keyvaultkey_info:
         vault_uri: "https://{{ base_name }}keyvault001.vault.azure.net/"
         name: MyKey
     - name: List all versions of specific secret
@@ -148,30 +147,30 @@
         version: all
 
     - name: Create (or update) SQL Server
-      azure_rm_sqlserver:
+      azure.azcollection.azure_rm_sqlserver:
         resource_group: "{{ base_rg }}"
         name: "{{ base_name }}sql001"
         admin_username: mylogin
         admin_password: Testpasswordxyz12!
       register: sql1
     - name: Create (or update) SQL Database
-      azure_rm_sqldatabase:
+      azure.azcollection.azure_rm_sqldatabase:
         resource_group: "{{ base_rg }}"
         server_name: "{{ base_name }}sql001"
         name: testdb
     - name: Create (or update) Firewall Rule
-      azure_rm_sqlfirewallrule:
+      azure.azcollection.azure_rm_sqlfirewallrule:
         resource_group: "{{ base_rg }}"
         server_name: "{{ base_name }}sql001"
         name: "{{ base_name }}sql001-firewallrules"
         start_ip_address: "{{ ip_allowlist }}"
         end_ip_address: "{{ ip_allowlist }}"
     - name: Get instance of SQL Server
-      azure_rm_sqlserver_info:
+      azure.azcollection.azure_rm_sqlserver_info:
         resource_group: "{{ base_rg }}"
         server_name: "{{ base_name }}sql001"
     - name: Get instance of SQL Database
-      azure_rm_sqldatabase_info:
+      azure.azcollection.azure_rm_sqldatabase_info:
         resource_group: "{{ base_rg }}"
         server_name: "{{ base_name }}sql001"
         name: testdb
@@ -180,7 +179,7 @@
     # FIXME: pymssql.OperationalError: (40508, b'USE statement is not supported to switch between databases. Use a new connection to connect to a different database.DB-Lib error message 20018, severity 16:\nGeneral SQL Server error: Check messages from the SQL Server
     #   https://support.microsoft.com/sw-ke/help/3035071/kb3035071-fix-error-when-you-run-a-query-that-contains-use-database-na
     - name: Import SQL File
-      mssql_db:
+      community.general.mssql_db:
         name: testdb
         state: import
         # https://docs.microsoft.com/en-us/sql/samples/sql-samples-where-are?view=sql-server-ver15; https://github.com/microsoft/sql-server-samples
@@ -195,7 +194,7 @@
     # https://docs.microsoft.com/en-us/azure/app-service/quickstart-php?pivots=platform-linux
     # Web App
     - name: Create a web app with php
-      azure_rm_webapp:
+      azure.azcollection.azure_rm_webapp:
         resource_group: "{{ base_rg }}"
         name: "{{ base_name }}webapp001"
         plan:
@@ -217,7 +216,7 @@
     # https://github.com/Azure/azure-quickstart-templates/tree/master/201-web-app-with-app-gateway-v2
     # https://docs.microsoft.com/en-us/azure/developer/ansible/application-gateway-configure?tabs=ansible
     - name: Create instance of Application Gateway
-      azure_rm_appgateway:
+      azure.azcollection.azure_rm_appgateway:
         resource_group: "{{ base_rg }}"
         name: "{{ base_name }}appgateway001"
         sku:
@@ -255,8 +254,9 @@
             frontend_port: ag_frontend_port
             name: sample_http_listener
         request_routing_rules:
-          - rule_type: Basic
+          - rule_type: basic
             backend_address_pool: test_backend_address_pool
             backend_http_settings: "{{ base_name }}webapp001"
             http_listener: sample_http_listener
             name: rule1
+            priority: 1

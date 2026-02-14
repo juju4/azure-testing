@@ -25,13 +25,11 @@
     az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
     sentinel_workspacename: "{{ base_name }}-sentinel-workspace"
 
-  collections:
-    - azure.azcollection
   tasks:
 
     # General
     - name: Create resource group
-      azure_rm_resourcegroup:
+      azure.azcollection.azure_rm_resourcegroup:
         name: "{{ base_rg }}"
         location: "{{ azure_location }}"
         tags: "{{ azure_tags }}"
@@ -39,7 +37,7 @@
     # FIXME: Resource group create_or_update failed with status code: 409 and message: Invalid resource group location 'westus'. The Resource group already exists in location 'eastus2'.
     #   but no westus reference anywhere...
     - name: Deploy Sentinel with ARM template
-      azure_rm_deployment:
+      azure.azcollection.azure_rm_deployment:
         resource_group: "{{ base_rg }}"
         name: "{{ base_rg }}-sentinel"
         state: present
@@ -53,23 +51,24 @@
     # ARM template through az cli...
     # https://thecloudblog.net/post/simplifying-arm-template-deployments-with-ansible/
     - name: Create parameters
-      template:
+      ansible.builtin.template:
         src: templates/azuredeploy.parameters.json.j2
         dest: /tmp/azuredeploy.parameters.json
         mode: '0600'
 
     - name: Get Logs Analytics info
-      azure_rm_resource_info:
+      azure.azcollection.azure_rm_resource_info:
         resource_group: "{{ base_rg }}"
         resource_type: workspaces
         provider: OperationalInsights
       register: workspaces
 
-    # - debug: msg="{{ workspaces.response[0] }}"
-    # - pause:
+    # - ansible.builtin.debug: msg="{{ workspaces.response[0] }}"
+    # - ansible.builtin.pause:
 
     - name: Deploy Sentinel with ARM template - az cli
-      shell: az deployment group create \
+      # noqa no-changed-when
+      ansible.builtin.command: az deployment group create \
         --name AnsibleDeployment \
         --resource-group {{ base_rg }} \
         --template-uri "https://raw.githubusercontent.com/Azure/azure-quickstart-templates/master/quickstarts/microsoft.operationsmanagement/azure-sentinel/azuredeploy.json" \
@@ -79,7 +78,7 @@
         workspaces.response is not defined or workspaces.response[0].value == []
 
     - name: Deploy Sentinel with ARM template - az cli Output
-      debug:
+      ansible.builtin.debug:
         msg: "{{ deploy.stdout }}"
       when: deploy is defined and deploy.stdout is defined
 
@@ -92,17 +91,19 @@
     # https://github.com/OTRF/Azure-Sentinel2Go/blob/master/azure-sentinel/linkedtemplates/log-analytics/iisLogsDataSource.json
 
     - name: Get Logs Analytics info
-      azure_rm_resource_info:
+      azure.azcollection.azure_rm_resource_info:
         resource_group: "{{ base_rg }}"
         resource_type: workspaces
         provider: OperationalInsights
       register: workspaces2
 
     - name: Set fact | workspaceid
-      set_fact:
+      ansible.builtin.set_fact:
         workspaceid: "{{ workspaces2.response[0].properties.customerId }}"
 
-    - debug: var=workspaceid
+    - name: Debug | var workspaceid
+      ansible.builtin.debug:
+        var: workspaceid
 
-    # FIXME: ARM template can recover workspace key but it does not seem possible for ansible
-    #   per https://github.com/OTRF/Azure-Sentinel2Go/blob/master/grocery-list/Win10/azuredeploy.json#L322
+# FIXME: ARM template can recover workspace key but it does not seem possible for ansible
+#   per https://github.com/OTRF/Azure-Sentinel2Go/blob/master/grocery-list/Win10/azuredeploy.json#L322

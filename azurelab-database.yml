@@ -24,13 +24,11 @@
     az_tenant_id: "{{ lookup('env', 'AZURE_TENANT') }}"
     az_subscription_id: "{{ lookup('env', 'AZURE_SUBSCRIPTION_ID') }}"
 
-  collections:
-    - azure.azcollection
   tasks:
 
     # General
     - name: Create resource group
-      azure_rm_resourcegroup:
+      azure.azcollection.azure_rm_resourcegroup:
         name: "{{ base_rg }}"
         location: "{{ azure_location }}"
         tags: "{{ azure_tags }}"
@@ -39,7 +37,7 @@
     # https://docs.ansible.com/ansible/latest/collections/azure/azcollection/azure_rm_sqlserver_module.html
     # https://docs.ansible.com/ansible/latest/collections/azure/azcollection/azure_rm_sqldatabase_module.html
     - name: Create (or update) SQL Server
-      azure_rm_sqlserver:
+      azure.azcollection.azure_rm_sqlserver:
         resource_group: "{{ base_rg }}"
         location: "{{ azure_location }}"
         name: "{{ sqlservername }}"
@@ -48,7 +46,7 @@
         tags: "{{ azure_tags }}"
 
     - name: Create (or update) SQL Database
-      azure_rm_sqldatabase:
+      azure.azcollection.azure_rm_sqldatabase:
         resource_group: "{{ base_rg }}"
         location: "{{ azure_location }}"
         server_name: "{{ sqlservername }}"
@@ -57,8 +55,8 @@
         zone_redundant: no
         tags: "{{ azure_tags }}"
 
-    - name: create storage account for audit
-      azure_rm_storageaccount:
+    - name: Create storage account for audit
+      azure.azcollection.azure_rm_storageaccount:
         resource_group: "{{ base_rg }}"
         location: "{{ azure_location }}"
         name: "{{ storage_account }}"
@@ -66,18 +64,23 @@
         tags: "{{ azure_tags }}"
 
     - name: Create container foo
-      azure_rm_storageblob:
+      azure.azcollection.azure_rm_storageblob:
         resource_group: "{{ base_rg }}"
         storage_account_name: "{{ storage_account }}"
         container: audit
         tags: "{{ azure_tags }}"
 
-    - debug: var=az_tenant_id
-    - debug: var=az_app_id
+    - name: Debug | vars
+      ansible.builtin.debug:
+        var: "{{ item }}"
+      loop:
+        - az_tenant_id
+        - az_app_id
+
     # https://docs.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-client-creds-grant-flow#get-a-token
     # https://liquidat.wordpress.com/2019/08/22/short-tip-handling-cant-concat-str-to-bytes-error-using-the-uri-module/
     - name: Get a REST API token
-      uri:
+      ansible.builtin.uri:
         url: "https://login.microsoftonline.com/{{ az_tenant_id }}/oauth2/v2.0/token"
         method: POST
         status_code: 200
@@ -91,10 +94,13 @@
           grant_type: "client_credentials"
         return_content: yes
       register: token
-    - debug: var=token verbosity=1
+    - name: Debug | var token
+      ansible.builtin.debug:
+        var: token
+        verbosity: 1
 
-    - name: get the storage account keys
-      uri:
+    - name: Get the storage account keys
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Storage/storageAccounts/{{ storage_account }}/listKeys?api-version=2016-12-01"
         method: POST
         headers:
@@ -102,10 +108,11 @@
         return_content: yes
       register: storage_account_keys
 
-    - debug:
+    - name: Debug | var storage_account_keys.json['keys'].0.value
+      ansible.builtin.debug:
         msg: "{{ storage_account_keys.json['keys'].0.value }}"
-
-    - debug:
+    - name: Debug | var storage_account_keys.json['keys'].1.value
+      ansible.builtin.debug:
         msg: "{{ storage_account_keys.json['keys'].1.value }}"
 
     # Non-standard options
@@ -117,7 +124,7 @@
     # FIXME: auditing of Microsoft operations (server level only, not database)
     # FIXME: granular sql statement/table auditing does not seem working
     - name: Enable database auditing with custom settings
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/auditingSettings/default?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
@@ -148,18 +155,20 @@
           }
 
     - name: Get database auditing
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/auditingSettings/default?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
         method: GET
         status_code: 200
       register: dbaudit
-    - debug: var=dbaudit
+    - name: Debug | var dbaudit
+      ansible.builtin.debug:
+        var: dbaudit
 
     # FIXME: not working
     - name: Enable server auditing
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/auditingSettings/default?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
@@ -180,18 +189,20 @@
 
     # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/databasesecurityalertpolicies/get
     - name: Get Database Security Alert Policies
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/securityAlertPolicies/default?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
         method: GET
         status_code: 200
       register: secalertpol
-    - debug: var=secalertpol
+    - name: Debug | var secalertpol
+      ansible.builtin.debug:
+        var: secalertpol
 
     # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/firewallrules/createorupdate
     - name: Set Firewall rule
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/firewallRules/{{ az_firewall_rulename }}?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
@@ -212,27 +223,31 @@
     # https://docs.microsoft.com/en-us/rest/api/securitycenter/pricings/update = seems only at subscription level/resource type and not individual resource
     # https://docs.microsoft.com/en-us/rest/api/securitycenter/pricings/get
     - name: Get Azure Security center pricings and settings
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/providers/Microsoft.Security/pricings/SqlServers?api-version=2018-06-01"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
         method: GET
         status_code: 200
       register: asc1
-    - debug: var=asc1
+    - name: Debug | var asc1
+      ansible.builtin.debug:
+        var: asc1
 
     - name: Set Azure Defender for Sql Server
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/providers/Microsoft.Security/pricings/SqlServers?api-version=2018-06-01"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
         body_format: json
-        body: "{{ lookup('file','azuredefendersql.json') }}"
+        body: "{{ lookup('file', 'azuredefendersql.json') }}"
         method: PUT
         status_code: 200
         return_content: yes
       register: asc2
-    - debug: var=asc2
+    - name: Debug | var asc2
+      ansible.builtin.debug:
+        var: asc2
 
     # Testing
     # https://docs.microsoft.com/en-us/sql/tools/mssql-cli?view=sql-server-ver15
@@ -252,14 +267,15 @@
     # ASC Recommendations
     # https://docs.microsoft.com/en-us/azure/azure-sql/database/authentication-aad-configure?WT.mc_id=Portal-Microsoft_Azure_Security&tabs=azure-powershell
     - name: Get user or group as ActiveDirectoryAdministrator for SQL server
-      shell: Get-AzSqlServerActiveDirectoryAdministrator -ResourceGroupName "{{ base_rg }}" -ServerName "{{ sqlservername }}"
+      ansible.builtin.shell: Get-AzSqlServerActiveDirectoryAdministrator -ResourceGroupName "{{ base_rg }}" -ServerName "{{ sqlservername }}"
       args:
         executable: /usr/local/bin/pwsh
       register: ada
       changed_when: false
 
     - name: Set user or group as ActiveDirectoryAdministrator for SQL server
-      shell: Set-AzSqlServerActiveDirectoryAdministrator -ResourceGroupName "{{ base_rg }}" -ServerName "{{ sqlservername }}" -DisplayName "secautomation"
+      # noqa no-changed-when
+      ansible.builtin.shell: Set-AzSqlServerActiveDirectoryAdministrator -ResourceGroupName "{{ base_rg }}" -ServerName "{{ sqlservername }}" -DisplayName "secautomation"
       args:
         executable: /usr/local/bin/pwsh
       when: "'secautomation' not in ada.stdout"
@@ -269,7 +285,7 @@
     # https://docs.microsoft.com/en-us/azure/azure-sql/database/data-discovery-and-classification-overview
     # https://docs.microsoft.com/en-us/rest/api/sql/2020-11-01-preview/sensitivitylabels/listrecommendedbydatabase
     - name: Sensitivity Labels - List Recommended By Database
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/recommendedSensitivityLabels?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
@@ -277,10 +293,12 @@
         status_code: 200
         return_content: yes
       register: sl1
-    - debug: var=sl1
+    - name: Debug | var sl1
+      ansible.builtin.debug:
+        var: sl1
 
     - name: Sensitivity Labels - Enable Recommendation
-      uri:
+      ansible.builtin.uri:
         url: "https://management.azure.com/subscriptions/{{ az_subscription_id }}/resourceGroups/{{ base_rg }}/providers/Microsoft.Sql/servers/{{ sqlservername }}/databases/{{ sqldbname }}/schemas/{{ item.schema }}/tables/{{ item.table }}/columns/{{ item.column }}/sensitivityLabels/recommended/enable?api-version=2020-11-01-preview"
         headers:
           Authorization: "Bearer {{ token['json']['access_token'] }}"
@@ -291,4 +309,6 @@
       with_items:
         - { schema: 'SalesLT', table: 'Customer', column: 'PasswordHash' }
         - { schema: 'SalesLT', table: 'SalesOrderHeader', column: 'CreditCardApprovalCode' }
-    - debug: var=sl2
+    - name: Debug | var sl2
+      ansible.builtin.debug:
+        var: sl2
